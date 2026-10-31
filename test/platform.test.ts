@@ -3,11 +3,25 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { HomebridgeAPI } from '../node_modules/homebridge/dist/api.js';
+import { deviceTypes } from '../node_modules/homebridge/dist/matter/types.js';
+import { AccessoryManager } from '../node_modules/homebridge/dist/matter/server/AccessoryManager.js';
 import type { Logging, MatterAccessory, MatterAPI } from 'homebridge';
 import register from '../src/index.js';
 import { DeyePlatform } from '../src/platform.js';
 
 const log = Object.assign(() => {}, { info() {}, warn() {}, error() {}, debug() {}, success() {}, log() {} }) as unknown as Logging;
+
+async function initializeBatteryScope(accessory: MatterAccessory, state: Record<string, any>, number: number): Promise<void> {
+  const { deviceType } = await new AccessoryManager().prepareDeviceType(accessory);
+  const behavior = deviceType.behaviors.temperatureMeasurement;
+  await behavior.prototype.initialize.call({
+    endpoint: { number, behaviors: { supported: deviceType.behaviors } },
+    agent: { load: async (source: unknown) => {
+      assert.equal(source, deviceType.behaviors.powerSource);
+      return { state: state.powerSource };
+    } },
+  });
+}
 async function until(check: () => boolean) {
   const deadline = Date.now() + 4000;
   while (!check()) {
@@ -73,14 +87,26 @@ test('creates only Matter sensors, migrates HAP cache, preserves values and hyst
   const upgraded: string[] = [];
   const matter = {
     uuid: api.hap.uuid,
-    deviceTypes: { TemperatureSensor: {}, ContactSensor: {}, ElectricalSensor: {} },
+    deviceTypes,
     registerPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
-      for (const accessory of accessories) { added.push(accessory); state.set(accessory.UUID, structuredClone(accessory.clusters!)); }
+      for (const accessory of accessories) {
+        added.push(accessory);
+        const clusters = structuredClone(accessory.clusters!);
+        if (accessory.context.sensorKey === 'battery') await initializeBatteryScope(accessory, clusters, 37);
+        state.set(accessory.UUID, clusters);
+      }
     },
     unregisterPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
       for (const accessory of accessories) { upgraded.push(accessory.UUID); state.delete(accessory.UUID); }
     },
-    updateAccessoryState: async (uuid: string, cluster: string, values: object) => { Object.assign(state.get(uuid)![cluster] ??= {}, values); },
+    updateAccessoryState: async (uuid: string, cluster: string, values: Record<string, unknown>) => {
+      if (cluster === 'powerSource') assert.deepEqual(values.endpointList, [37], 'every SOC update must preserve its scope');
+      if (cluster === 'powerSource' && values.batPercentRemaining != null) {
+        assert.equal(uuid, batteryUuid, 'SOC must target the battery endpoint');
+        assert.deepEqual(state.get(uuid)!.powerSource.endpointList, [37], 'SOC must never become active at node scope');
+      }
+      Object.assign(state.get(uuid)![cluster] ??= {}, values);
+    },
     getAccessoryState: async (uuid: string, cluster: string) => state.get(uuid)?.[cluster],
   } as unknown as MatterAPI;
   Object.defineProperty(api, 'matter', { value: matter });
@@ -111,6 +137,10 @@ test('creates only Matter sensors, migrates HAP cache, preserves values and hyst
     assert.equal(sensor('ac').temperatureMeasurement.measuredValue, 5590);
     assert.equal(sensor('battery').temperatureMeasurement.measuredValue, 3400);
     assert.equal(sensor('battery').powerSource.batPercentRemaining, 166, '83% must use Matter half-percent units');
+    assert.deepEqual(sensor('battery').powerSource.endpointList, [37]);
+    for (const key of ['dc', 'ac', 'grid', 'pv', 'totalConsumptionEnergy', 'totalImportEnergy']) {
+      assert.equal(sensor(key).powerSource, undefined, `${key} must not carry a storage-battery source`);
+    }
     assert.deepEqual(upgraded, [batteryUuid, oldPv.UUID], 'old battery is upgraded and separate PV input is removed');
     assert.equal(sensor('grid').booleanState.stateValue, true);
     assert.deepEqual(registers.slice(0, 3), [78, 150, 182]);
@@ -157,6 +187,55 @@ test('creates only Matter sensors, migrates HAP cache, preserves values and hyst
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+for (const previousScope of [[], [12]] as number[][]) {
+  test(`restored battery source with scope ${JSON.stringify(previousScope)} is rebuilt and uses its current endpoint`, async () => {
+    const api = new HomebridgeAPI();
+    const batteryUuid = api.hap.uuid.generate('homebridge-deye-inverter:battery');
+    const cached = {
+      UUID: batteryUuid, context: { sensorKey: 'battery' }, deviceType: deviceTypes.TemperatureSensor,
+      clusters: {
+        temperatureMeasurement: { measuredValue: 3200 },
+        powerSource: { status: 1, order: 0, description: 'Deye storage battery', endpointList: previousScope, batPercentRemaining: 166 },
+      },
+    } as MatterAccessory;
+    const state = new Map<string, Record<string, any>>([[batteryUuid, structuredClone(cached.clusters!)]]);
+    const removed: string[] = [];
+    const added: MatterAccessory[] = [];
+    const matter = {
+      uuid: api.hap.uuid, deviceTypes,
+      getAccessoryState: async (uuid: string, cluster: string) => state.get(uuid)?.[cluster],
+      unregisterPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
+        for (const accessory of accessories) { removed.push(accessory.UUID); state.delete(accessory.UUID); }
+      },
+      registerPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
+        for (const accessory of accessories) {
+          added.push(accessory);
+          const clusters = structuredClone(accessory.clusters!);
+          if (accessory.context.sensorKey === 'battery') await initializeBatteryScope(accessory, clusters, 83);
+          state.set(accessory.UUID, clusters);
+        }
+      },
+      updateAccessoryState: async (uuid: string, cluster: string, attributes: object) => Object.assign(state.get(uuid)![cluster] ??= {}, attributes),
+    } as unknown as MatterAPI;
+    const platform = new DeyePlatform(log, { platform: 'DeyeInverter', host: '127.0.0.1' }, api);
+    Object.defineProperty(api, 'matter', { value: matter });
+    platform.configureMatterAccessory(cached);
+    // Exercise only setup; no platform launch, timer, bridge or Modbus polling.
+    (platform as any).matter = matter;
+    try {
+      await (platform as any).setupAccessories();
+      assert.deepEqual(removed, [batteryUuid]);
+      const replacement = added.find(accessory => accessory.context.sensorKey === 'battery');
+      assert.equal(replacement?.UUID, batteryUuid, 'migration preserves the accessory identity');
+      assert.deepEqual(replacement?.clusters?.powerSource?.endpointList, [83], 'the scope initializer updates the cache declaration too');
+      assert.deepEqual(state.get(batteryUuid)!.powerSource.endpointList, [83], 'cached global/stale scope must not survive');
+      assert.equal(state.get(batteryUuid)!.powerSource.batPercentRemaining, null, 'restored SOC stays unavailable until a fresh read');
+    } finally {
+      api.signalShutdown();
+    }
+  });
+}
 
 test('Matter disabled creates no accessories and retains old HAP cache', async t => {
   const api = new HomebridgeAPI();

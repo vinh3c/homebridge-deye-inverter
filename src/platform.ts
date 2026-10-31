@@ -1,5 +1,6 @@
 import type { API, DynamicPlatformPlugin, Logging, MatterAccessory, MatterAPI, PlatformAccessory, PlatformConfig } from 'homebridge';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createBatteryTemperatureType, readBatteryEndpointList } from './battery.js';
 import { TotalConsumptionEnergy, TotalImportEnergy } from './energy.js';
 import { PvSensors, PV_RANGES } from './pv.js';
 import { decodeBatteryPercent, decodeTemperature, readRegisterRanges, type ConnectionOptions, type RegisterRange } from './modbus.js';
@@ -21,6 +22,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
   private readonly uuids = new Map<string, string>();
   private readonly available = new Set<string>();
   private gridPresent?: boolean;
+  private batteryEndpointList?: number[];
   private readonly options!: ConnectionOptions;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -97,6 +99,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       if (this.stopped) return;
       const uuid = matter.uuid.generate(`${PLUGIN_NAME}:${sensor.key}`);
       const cached = this.cached.get(uuid) ?? [...this.cached.values()].find(item => item.context.sensorKey === sensor.key);
+      let batteryEndpointNumber: number | undefined;
       const accessory: MatterAccessory = {
         UUID: cached?.UUID ?? uuid, displayName: sensor.name,
         deviceType: sensor.kind === 'contact' ? matter.deviceTypes.ContactSensor : matter.deviceTypes.TemperatureSensor,
@@ -112,19 +115,28 @@ export class DeyePlatform implements DynamicPlatformPlugin {
           batPercentRemaining: null, batPresent: true, batChargeState: 0,
           batFunctionalWhileCharging: true,
         };
+        accessory.deviceType = createBatteryTemperatureType(matter, number => {
+          batteryEndpointNumber = number;
+          // Read the current declaration: Homebridge can replace cluster objects
+          // while restoring cached attributes before running our initializer.
+          Object.assign(accessory.clusters!.powerSource!, {
+            endpointList: [number], batPercentRemaining: null, status: 0,
+          });
+        });
       }
-      // Cluster topology is fixed when the endpoint is built. Upgrade an old
-      // battery endpoint once, keeping its UUID but rebuilding with PowerSource.
-      const upgradeBattery = sensor.key === 'battery' && cached && !cached.clusters?.powerSource;
-      if (upgradeBattery) {
+      // Homebridge's cache keeps device type names/codes, not our initializer.
+      // Rebuild Battery Temperature with the same UUID on every restore so its
+      // PowerSource is scoped to its actual assigned endpoint before going ready.
+      const rebuildBattery = sensor.key === 'battery' && cached;
+      if (rebuildBattery) {
         await matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [cached]);
         const deadline = Date.now() + 5000;
         while (await matter.getAccessoryState(accessory.UUID, 'temperatureMeasurement') !== undefined) {
-          if (Date.now() >= deadline) throw new Error('Battery endpoint upgrade did not finish within 5 seconds');
+          if (Date.now() >= deadline) throw new Error('Battery endpoint rebuild did not finish within 5 seconds');
           await delay(50);
         }
       }
-      if (!cached || upgradeBattery) await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      if (!cached || rebuildBattery) await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       const cluster = sensor.kind === 'contact' ? 'booleanState' : 'temperatureMeasurement';
       const deadline = Date.now() + 5000;
       while (!this.stopped && await matter.getAccessoryState(accessory.UUID, cluster) === undefined) {
@@ -135,7 +147,16 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       this.uuids.set(sensor.key, accessory.UUID);
       await matter.updateAccessoryState(accessory.UUID, 'bridgedDeviceBasicInformation', { reachable: false });
       if (sensor.kind === 'temperature') await matter.updateAccessoryState(accessory.UUID, cluster, { measuredValue: null });
-      if (sensor.key === 'battery') await matter.updateAccessoryState(accessory.UUID, 'powerSource', { batPercentRemaining: null, status: 0 });
+      if (sensor.key === 'battery') {
+        if (batteryEndpointNumber === undefined) throw new Error('Battery SOC endpoint scope initializer did not run');
+        this.batteryEndpointList = readBatteryEndpointList(await matter.getAccessoryState(accessory.UUID, 'powerSource'), batteryEndpointNumber);
+        // Persist the assigned scope with each update; cached SOC must never
+        // reactivate a node-wide source on the next Homebridge start.
+        await matter.updateAccessoryState(accessory.UUID, 'powerSource', {
+          endpointList: this.batteryEndpointList, batPercentRemaining: null, status: 0,
+        });
+        this.log.info(`Battery SOC scope: Battery Temperature only (endpoint=${this.batteryEndpointList[0]})`);
+      }
       this.log.info(`${cached ? 'Restored' : 'Added'} Matter accessory: ${sensor.name}`);
     }
   }
@@ -198,7 +219,9 @@ export class DeyePlatform implements DynamicPlatformPlugin {
           const [raw] = snapshot.get(184);
           const batteryPercent = decodeBatteryPercent(raw);
           if (batteryPercent === null) throw new Error(`Invalid battery SOC word: ${raw}`);
-          await matter.updateAccessoryState(uuid, 'powerSource', { batPercentRemaining: batteryPercent * 2, status: 1 });
+          await matter.updateAccessoryState(uuid, 'powerSource', {
+            endpointList: this.batteryEndpointList, batPercentRemaining: batteryPercent * 2, status: 1,
+          });
           const reading = `Battery Percent: ${batteryPercent}% (register=184, raw=${raw})`;
           if (this.available.has('batteryPercent')) this.log.debug(reading);
           else this.log.info(reading);
@@ -206,7 +229,9 @@ export class DeyePlatform implements DynamicPlatformPlugin {
         } catch (error) {
           this.available.delete('batteryPercent');
           this.log.warn(`Battery Percent read/update failed at ${this.options.host}:${this.options.port}, register 184: ${String(error)}. Will retry next cycle.`);
-          try { await matter.updateAccessoryState(uuid, 'powerSource', { batPercentRemaining: null, status: 0 }); }
+          try { await matter.updateAccessoryState(uuid, 'powerSource', {
+            endpointList: this.batteryEndpointList, batPercentRemaining: null, status: 0,
+          }); }
           catch (updateError) { this.log.warn(`Could not mark battery percentage unavailable: ${String(updateError)}`); }
         }
       }
