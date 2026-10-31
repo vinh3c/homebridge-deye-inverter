@@ -105,16 +105,16 @@ If you enabled a child bridge, pair that child bridge with Apple Home separately
 ## GitHub Actions and npm publishing
 
 - `ci.yml`: runs TypeScript checks, tests, and package validation on Node.js 22 and 24 for every push and pull request.
-- `publish.yml`: runs checks and publishes to npm when a **non-prerelease GitHub Release is published**. The release tag must match `v` followed by the version in `package.json`.
+- `publish.yml`: runs checks and publishes to npm when a **non-prerelease GitHub Release is published**. Use a stable release tag such as `v1.0.4`; the workflow automatically sets the version in `package.json` and `package-lock.json` from that tag before running checks and publishing. These version changes happen only in the workflow checkout; they do not create a commit or move the tag.
 - The publishing workflow sets `repository.url` from the GitHub repository it runs in. Do not commit tokens to source control.
 
 Initial setup:
 
 1. Push the source to your GitHub repository. Check that the package name `homebridge-deye-inverter` is available on npm. If you rename the package, also update `PLUGIN_NAME` in `src/platform.ts`.
 2. For the first publication through Actions, create an npm granular access token with package publishing permissions and 2FA bypass enabled. Save it as the GitHub repository Actions secret **`NPM_TOKEN`**.
-3. Commit the package version and `package-lock.json`, create a `v1.0.0` tag pointing to that commit, and publish a GitHub Release for the tag. The workflow will publish version `1.0.0`.
+3. Push the code, create a `v1.0.0` tag pointing to that commit, and publish a GitHub Release for the tag. The workflow will automatically set and publish version `1.0.0`.
 4. Once the package exists, you can switch to **npm Trusted Publishing**. In the npm package settings, configure the exact GitHub owner, repository, and workflow filename **`publish.yml`**. If prompted for an allowed action, select publishing. Leave the environment unset because this workflow does not use one. Remove the `NPM_TOKEN` secret after configuring OIDC; the workflow already has `id-token: write` permission and uses Node.js 24.
 
-For later releases, run `npm version patch` in a clean Git working tree, push the commit and tag, then publish a GitHub Release for the new tag. An existing npm version cannot be published again.
+For later releases, push the code and publish a GitHub Release with the next unused stable tag (for example, `v1.0.4`). No manual package version update is required. The tagged commit must contain this workflow change; rerunning an older failed release still uses its old workflow. An existing npm version cannot be published again.
 
 References: [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/), [Homebridge dynamic platform API](https://developers.homebridge.io/homebridge/interfaces/DynamicPlatformPlugin.html).
