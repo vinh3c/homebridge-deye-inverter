@@ -23,7 +23,6 @@ class CumulativeEnergy {
   private matter?: MatterAPI;
   private uuid?: string;
   private lastAttempt?: number;
-  private available = false;
 
   constructor(private readonly log: Logging, private readonly api: API, private readonly definition = consumption) {}
 
@@ -44,7 +43,7 @@ class CumulativeEnergy {
       deviceType: matter.deviceTypes.ElectricalSensor,
       serialNumber: this.definition.serial,
       manufacturer: 'Deye',
-      model: 'SUN-6K-SG05LP1-EU-SM2-P',
+      model: 'Modbus TCP Inverter',
       context: { sensorKey: this.definition.key },
       clusters: { electricalEnergyMeasurement: { cumulativeEnergyImported: null } },
     };
@@ -97,12 +96,11 @@ class CumulativeEnergy {
       if (stopped()) return;
       await this.updateMeasurement({ energy: totalConsumptionEnergyMWh, endTimestamp });
       const message = `${this.definition.name}: ${totalConsumptionEnergyMWh / 1_000_000} kWh (registers=${this.definition.low},${this.definition.high}, raw=${raw.join(',')})`;
-      if (!this.available) this.log.info(message);
-      else this.log.debug(message);
-      this.available = true;
+      // Energy updates are already throttled to roughly once per minute. Keep
+      // their applied readings visible without enabling all Homebridge debug logs.
+      this.log.info(`${message}; Matter state confirmed`);
     } catch (error) {
       if (stopped()) return;
-      this.available = false;
       this.log.warn(`${this.definition.name} read/update failed at ${options.host}:${options.port}, registers ${this.definition.low},${this.definition.high}: ${error instanceof Error ? error.message : String(error)}. Will retry in 60 seconds.`);
       try {
         await this.updateMeasurement(null);

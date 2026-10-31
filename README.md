@@ -1,6 +1,8 @@
 # homebridge-deye-inverter
 
-A Homebridge plugin that exposes **seven Matter accessories** for a **Deye SUN-6K-SG05LP1-EU-SM2-P** inverter over Modbus TCP. Matter runs inside Homebridge; the plugin does not create HAP sensors.
+A Homebridge plugin that exposes **seven Matter accessories** for Deye inverters over Modbus TCP. Matter runs inside Homebridge; the plugin does not create HAP sensors.
+
+The current Homebridge register map has been verified on a SUN-6K-SG05LP1-EU-SM2-P single-phase inverter. Other models require a compatible register map; support for every Deye model is not implied. Accessories use generic model metadata (`Modbus TCP Inverter`) rather than claiming a specific hardware model.
 
 | Sensor | Holding registers (FC03) | Reading |
 | --- | --- | --- |
@@ -29,7 +31,9 @@ npm install -g ./homebridge-deye-inverter-1.0.3.tgz
 2. In **Homebridge UI → Plugins → Deye Inverter → Plugin Config**, enter the logger IP address.
 3. Enable Matter on that Homebridge bridge or child bridge, save and restart.
 
-All seven accessories use the Matter connection. The bridge's existing HAP connection does not expose them. Matter accessories may not appear in Homebridge UI's HAP accessories screen. Their presentation in a controller depends on its device-type support; energy history charts are not guaranteed.
+All seven accessories use the Matter connection. The bridge's existing HAP connection does not expose them. Homebridge UI can list Matter accessories, but its upstream accessory renderer inspected on 2026-10-31 has no `ElectricalSensor` tile: PV and the two energy meters fall back to an unknown-device tile with no measurement values. This is a UI rendering limitation, not evidence of a failed Modbus read. See the [UI tile selector](https://github.com/homebridge/homebridge-config-ui-x/blob/latest/ui/src/app/core/accessories/accessory-tile/accessory-tile.component.html) and [fallback template](https://github.com/homebridge/homebridge-config-ui-x/blob/latest/ui/src/app/core/accessories/types/matter/unknown/unknown.component.html).
+
+The user's Apple Home Power screen displays PV watts but no values for the cumulative energy meters. Cumulative kWh display remains unverified; do not infer it from successful Matter updates or promise energy charts. Power and energy are separate measurements: the plugin does not relabel cumulative kWh as instantaneous W to fill an empty tile.
 
 | Setting | Default | Description |
 | --- | --- | --- |
@@ -54,13 +58,13 @@ Grid is **Closed / contact detected** when grid voltage reaches **100 V**, and *
 
 Total Consumption Energy measures cumulative load consumption, including energy supplied from grid, solar and battery, rather than just grid purchases. The measured scope depends on the inverter's wiring and metering configuration. Read registers 85–86 together as an unsigned 32-bit number, low word first. CLI readings use `totalConsumptionEnergy`, and Homebridge logs use **Total Consumption Energy**. The internal Matter adapter converts the value to mWh and includes the observation timestamp. The plugin preserves the inverter's counter and does not compute daily differences or invent its start/reset date. Failed reads publish `null`, with automatic retry.
 
-First successful readings and recoveries are logged at info level; subsequent readings use debug logging. Failures include the logger address and register. Live Modbus reads have confirmed temperatures and energy on the stated model (one observed energy reading was **568.1 kWh**, raw `[5681, 0]`). These are test observations, not fixed values. Apple Home presentation has not been verified.
+Each successful energy update is logged at info level, approximately once per minute, after reading back the applied Matter state (`Matter state confirmed`). This confirms the Homebridge endpoint state, not receipt or presentation by Apple Home. Other measurements log first successes and recoveries at info level and subsequent readings at debug level. Failures include the logger address and register. Live Modbus reads have confirmed temperatures and energy on the tested model (one observed energy reading was **568.1 kWh**, raw `[5681, 0]`). These are test observations, not fixed values.
 
 Total Import Energy is a separate counter for energy bought from the grid. Register **79 is grid frequency**, so read 78–80 together but combine only words **78 and 80**. The two energy counters have distinct Matter accessory identities and must not overwrite each other. Do not add them together as a whole-home total. `--energy-only` reads **78–86** in one FC03 request and logs both counters in kWh. One live reading returned `totalConsumptionEnergy = 569.7` and `totalImportEnergy = 60.3`; compare with Total Load and Grid Buy on the inverter to confirm scope.
 
 PV is a single total instantaneous DC power measurement, separate from cumulative kWh counters. The single-phase CLI logs only `pvTotalPowerW`, the sum of reported watts from registers 186 and 187. It does not read or expose separate PV input voltages, currents or powers. Zero is valid, including at night. If either input's power is invalid/unavailable, the total is `null`, not a partial sum. The raw register pair remains available for diagnostics under `raw.pvTotalPowerW`.
 
-The plugin exposes one read-only **PV** Matter ElectricalSensor accessory in DC mode, using mW internally. Cached PV1/PV2 accessories from an earlier version are removed after the total PV endpoint is ready. Apple Home's display of this measurement is not verified; no fake switch or cumulative-energy value is used to represent instantaneous power. Three-phase CLI profiles and the explicit `--grid-only`/`--energy-only` modes omit this single-phase PV reading.
+The plugin exposes one read-only **PV** Matter ElectricalSensor accessory in DC mode, using mW internally. Cached PV1/PV2 accessories from an earlier version are removed after the total PV endpoint is ready. The user's Apple Home Power screenshot confirms a 3 W reading; cumulative energy display remains unverified. No fake switch or cumulative-energy value is used to represent instantaneous power. Three-phase CLI profiles and the explicit `--grid-only`/`--energy-only` modes omit this single-phase PV reading.
 
 ## CLI checks on the real inverter
 

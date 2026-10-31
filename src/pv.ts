@@ -38,7 +38,7 @@ export class PvSensors {
     const accessory: MatterAccessory = {
       UUID: cached?.UUID ?? uuid, displayName: 'PV',
       deviceType: matter.deviceTypes.ElectricalSensor,
-      manufacturer: 'Deye', model: 'PV Total Power', serialNumber: `${plugin}-pv`,
+      manufacturer: 'Deye', model: 'Modbus TCP Inverter', serialNumber: `${plugin}-pv`,
       context: { sensorKey: 'pv' },
       clusters: {
         // Total instantaneous DC generation in mW, without inventing a combined

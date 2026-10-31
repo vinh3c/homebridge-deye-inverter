@@ -18,7 +18,7 @@ async function main() {
     timeoutMs: integer('MODBUS_TIMEOUT_MS', 5000, 1, 60000),
   };
   const interval = integer('POLL_INTERVAL_MS', 10000, 1000, 3600000);
-  // Installed inverter: SUN-6K-SG05LP1-EU-SM2-P (single-phase hybrid).
+  // Default single-phase hybrid register map.
   let profile = process.env.DEYE_PROFILE ?? 'single';
   if (!['auto', 'single', 'three'].includes(profile)) throw new Error('DEYE_PROFILE phải là auto, single hoặc three');
   let deviceType: number | null = null;
