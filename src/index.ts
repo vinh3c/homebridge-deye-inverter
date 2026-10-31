@@ -6,7 +6,9 @@ export default (api: API) => {
   api.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, DeyePlatform);
   api.on('didFinishLaunching', () => {
     if (!DeyePlatform.isInitialized(api)) {
-      console.warn(`[${PLUGIN_NAME}] Plugin loaded, but ${PLATFORM_NAME} was not initialized in this process. Check child bridge logs if enabled; otherwise add { "platform": "${PLATFORM_NAME}", "host": "192.168.5.60" } to config.json platforms and restart Homebridge.`);
+      console.warn(`[${PLUGIN_NAME}] SETUP REQUIRED: plugin installed, but no ${PLATFORM_NAME} platform is running in this process.`);
+      console.warn(`[${PLUGIN_NAME}] Open Homebridge UI > Plugins > Deye Inverter > Plugin Config. Enter your logger IP address, click Save, then Restart Homebridge. No manual JSON editing is needed.`);
+      console.warn(`[${PLUGIN_NAME}] Enable Modbus in your logger first. If you already configured a child bridge, check that child bridge's logs and restart it.`);
     }
   });
 };

@@ -59,6 +59,13 @@ test('real Homebridge loads the built plugin and exposes three sensors over HAP'
     await delay(100);
     const cache = JSON.parse(await readFile(join(storage, 'accessories', 'cachedAccessories'), 'utf8'));
     assert.equal(cache.length, 3);
+    assert.match(output, /Plugin loaded \(Homebridge /, 'entry point must log even before platform setup');
+    assert.match(output, /Starting DeyeInverter platform/);
+    for (const name of ['DC Temperature', 'AC Temperature', 'Battery Temperature']) {
+      assert(output.includes(`Added accessory: ${name}`), `Missing accessory registration log: ${name}`);
+      assert(output.includes(`${name}: `), `Missing first temperature reading log: ${name}`);
+    }
+    assert(!output.includes('SETUP REQUIRED'), 'configured platform must not emit a missing configuration warning');
     console.log(output);
   } finally {
     child.kill('SIGTERM');

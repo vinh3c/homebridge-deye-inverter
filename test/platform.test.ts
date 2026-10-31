@@ -36,7 +36,11 @@ test('logs plugin loading and detects a missing platform configuration', t => {
   register(api);
   assert.match(String(info.mock.calls[0].arguments[0]), /Plugin loaded/);
   api.signalFinished();
-  assert.match(String(warn.mock.calls[0].arguments[0]), /DeyeInverter was not initialized/);
+  const messages = warn.mock.calls.map(call => String(call.arguments[0])).join('\n');
+  assert.match(messages, /SETUP REQUIRED/);
+  assert.match(messages, /Homebridge UI > Plugins > Deye Inverter > Plugin Config/);
+  assert.match(messages, /click Save, then Restart Homebridge/);
+  assert(!messages.includes('platforms and restart'), 'setup instructions should use the UI instead of manual JSON edits');
 });
 
 test('creates three HAP sensors, restores cache, faults and recovers, stops polling', async t => {
@@ -102,7 +106,20 @@ test('creates three HAP sensors, restores cache, faults and recovers, stops poll
   }
 });
 
-test('rejects invalid configuration', () => {
-  assert.throws(() => new DeyePlatform(log, { platform: 'DeyeInverter', host: '' }, new HomebridgeAPI()), /host/);
-  assert.throws(() => new DeyePlatform(log, { platform: 'DeyeInverter', port: 0 }, new HomebridgeAPI()), /port/);
+test('missing IP logs setup instructions and does not register sensors', t => {
+  const warn = t.mock.method(log, 'warn', () => {});
+  for (const host of [undefined, '', '   ']) {
+    const api = new HomebridgeAPI();
+    const registerAccessories = t.mock.method(api, 'registerPlatformAccessories', () => {});
+    new DeyePlatform(log, { platform: 'DeyeInverter', host }, api);
+    api.signalFinished();
+    assert.equal(DeyePlatform.isInitialized(api), false);
+    assert.equal(registerAccessories.mock.callCount(), 0);
+  }
+  assert.equal(warn.mock.callCount(), 3);
+  assert.match(String(warn.mock.calls[0].arguments[0]), /SETUP REQUIRED.*Plugin Config/);
+});
+
+test('rejects invalid port', () => {
+  assert.throws(() => new DeyePlatform(log, { platform: 'DeyeInverter', host: '127.0.0.1', port: 0 }, new HomebridgeAPI()), /port/);
 });

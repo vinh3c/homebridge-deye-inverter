@@ -23,7 +23,15 @@ Once published to npm, search for **homebridge-deye-inverter** in the Homebridge
 npm install -g homebridge-deye-inverter
 ```
 
-Configure the plugin through its Settings page, or add this entry to the `platforms` array in your Homebridge `config.json`:
+To activate the plugin:
+
+1. Open **Homebridge UI → Plugins → Deye Inverter → Plugin Config**.
+2. Enter your logger's IP address.
+3. Click **Save**, then **Restart Homebridge**.
+
+The logger IP field starts empty and must be filled in. The UI saves the platform configuration for you. No manual JSON editing is needed. Installing the package alone does not activate the sensors; the plugin logs **SETUP REQUIRED** with these steps if its platform has not started. A platform with a missing or blank IP also logs setup instructions and does not attempt to connect or create sensors.
+
+For reference, the saved platform configuration looks like this:
 
 ```json
 {
@@ -39,7 +47,7 @@ Only the logger's IP address is needed. The port is optional and can be changed 
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `host` | `192.168.5.60` | Logger IP address or hostname |
+| `host` | None — required | Logger IP address or hostname |
 | `port` | `502` | Modbus TCP port |
 
 The plugin waits 10 seconds after each polling cycle completes before starting the next cycle. Each request has a 5-second timeout, and requests never overlap. No polling or timeout configuration is needed. Failed sensors report a communication error instead of serving stale temperatures, and recover automatically after a successful read.
@@ -60,10 +68,10 @@ npm run test:homebridge
 npm pack
 ```
 
-`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.1.tgz`. Install the local package on your Homebridge machine with:
+`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.3.tgz`. Install the local package on your Homebridge machine with:
 
 ```sh
-npm install -g ./homebridge-deye-inverter-1.0.1.tgz
+npm install -g ./homebridge-deye-inverter-1.0.3.tgz
 ```
 
 A CLI is also available to test the logger directly from the source checkout:
@@ -81,7 +89,7 @@ Unit tests use a simulated Modbus TCP logger and the Homebridge API/HAP. `npm ru
 
 Installing the package alone does not enable its platform. Save the configuration shown above in Homebridge, then restart Homebridge. The platform name must be `DeyeInverter`.
 
-Version 1.0.1 logs `Plugin loaded (Homebridge ..., Node ...)` as soon as Homebridge invokes the plugin entry point, even before platform configuration is loaded. If no platform starts in that process, it logs `DeyeInverter was not initialized` with configuration guidance and a reminder to check child bridge logs.
+The plugin logs `Plugin loaded (Homebridge ..., Node ...)` as soon as Homebridge invokes the plugin entry point, even before platform configuration is loaded. If no platform starts in that process, it logs **SETUP REQUIRED** and the exact Homebridge UI steps to activate the plugin, with a reminder to check child bridge logs when applicable.
 
 Platform startup logs include `Starting DeyeInverter platform`, the logger address, `Added accessory:` or `Restored accessory:` for each sensor, and `Ready: DC Temperature, AC Temperature, Battery Temperature`. The first successful reading and recovery after a failed read are logged at the normal info level; subsequent readings use debug logging. Read failures include the logger address, register, and error.
 If the initialization line is missing, check that the platform configuration was saved and the plugin is enabled. If there is a load error, inspect the preceding Homebridge logs.

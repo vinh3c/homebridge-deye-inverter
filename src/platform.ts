@@ -20,7 +20,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
   private readonly cached = new Map<string, PlatformAccessory>();
   private readonly services = new Map<string, Service>();
   private readonly values = new Map<string, number>();
-  private readonly options: ConnectionOptions;
+  private readonly options!: ConnectionOptions;
   private readonly intervalMs = 10_000;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -34,13 +34,16 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       }
       return value;
     };
-    DeyePlatform.initialized.add(api);
-    const host = config.host ?? '192.168.5.60';
-    if (typeof host !== 'string' || !host.trim()) throw new Error('host must be a non-empty hostname or IP');
+    const host = config.host;
+    if (typeof host !== 'string' || !host.trim()) {
+      this.log.warn('SETUP REQUIRED: open Homebridge UI > Plugins > Deye Inverter > Plugin Config, enter your logger IP address, click Save, then Restart Homebridge. No connection will be attempted until an IP address is configured.');
+      return;
+    }
     this.options = {
       host: host.trim(), port: integer('port', 502, 1, 65535),
       unitId: 1, timeoutMs: 5000,
     };
+    DeyePlatform.initialized.add(api);
     this.log.info(`Connecting to Modbus TCP logger at ${this.options.host}:${this.options.port}`);
     // One inverter per platform; fixed identity survives IP and display name changes.
     api.on('didFinishLaunching', () => {
