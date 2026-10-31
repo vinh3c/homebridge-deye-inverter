@@ -1,0 +1,37 @@
+name: Publish to npm
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Match release tag to package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: node -e "const p = require('./package.json'); if (process.env.RELEASE_TAG !== 'v' + p.version) { throw new Error('Release tag must be v' + p.version); }"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Set repository metadata
+        run: npm pkg set repository.type=git repository.url="git+https://github.com/${GITHUB_REPOSITORY}.git"
+      - run: npm pack --dry-run
+      - name: Publish (OIDC, or NPM_TOKEN for initial setup)
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,30 @@
+{
+  "name": "homebridge-deye-inverter",
+  "displayName": "Deye Inverter",
+  "version": "1.0.0",
+  "description": "Homebridge DC, AC and battery temperature sensors for Deye inverters via Modbus TCP",
+  "main": "dist/index.js",
+  "keywords": ["homebridge-plugin", "deye", "modbus", "temperature"],
+  "engines": { "node": "^22.10.0 || ^24.0.0", "homebridge": ">=1.8.0 <3.0.0" },
+  "files": ["dist/**/*.js", "config.schema.json"],
+  "publishConfig": { "access": "public" },
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/cli.ts",
+    "start": "tsx src/cli.ts",
+    "build": "tsc",
+    "serve": "node dist/cli.js",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "homebridge": "^1.11.4",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3"
+  }
+}
