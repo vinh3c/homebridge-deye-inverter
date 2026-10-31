@@ -7,9 +7,10 @@ import { decodeBatteryPercent, decodeTemperature, readRegisterRanges, type Conne
 export const PLUGIN_NAME = 'homebridge-deye-inverter';
 export const PLATFORM_NAME = 'DeyeInverter';
 const sensors = [
-  { key: 'dc', name: 'DC Temperature', register: 90 },
-  { key: 'ac', name: 'AC Temperature', register: 91 },
-  { key: 'battery', name: 'Battery Temperature', register: 182 },
+  { key: 'dc', name: 'DC Temperature', register: 90, kind: 'temperature' },
+  { key: 'ac', name: 'AC Temperature', register: 91, kind: 'temperature' },
+  { key: 'battery', name: 'Battery Temperature', register: 182, kind: 'temperature' },
+  { key: 'grid', name: 'Grid', register: 150, kind: 'contact' },
 ] as const;
 
 export class DeyePlatform implements DynamicPlatformPlugin {
@@ -19,6 +20,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
   private readonly cached = new Map<string, MatterAccessory>();
   private readonly uuids = new Map<string, string>();
   private readonly available = new Set<string>();
+  private gridPresent?: boolean;
   private batteryEndpointList?: number[];
   private readonly options!: ConnectionOptions;
   private timer?: ReturnType<typeof setTimeout>;
@@ -58,7 +60,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
 
   private async start(): Promise<void> {
     if (!this.api.isMatterEnabled?.() || !this.api.matter?.deviceTypes.ElectricalSensor) {
-      this.log.warn('SETUP REQUIRED: Deye Inverter uses Matter for all eight accessories. Use Homebridge >= 2.2 and enable Matter on this bridge (or its child bridge), then restart. No Modbus polling will start until Matter is enabled.');
+      this.log.warn('SETUP REQUIRED: Deye Inverter uses Matter for all nine accessories. Use Homebridge >= 2.2 and enable Matter on this bridge (or its child bridge), then restart. No Modbus polling will start until Matter is enabled.');
       return;
     }
     this.matter = this.api.matter;
@@ -89,10 +91,12 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       let batteryEndpointNumber: number | undefined;
       const accessory: MatterAccessory = {
         UUID: cached?.UUID ?? uuid, displayName: sensor.name,
-        deviceType: matter.deviceTypes.TemperatureSensor,
+        deviceType: sensor.kind === 'contact' ? matter.deviceTypes.ContactSensor : matter.deviceTypes.TemperatureSensor,
         manufacturer: 'Deye', model: 'Modbus TCP Inverter', serialNumber: `${PLUGIN_NAME}-${sensor.key}`,
         context: { sensorKey: sensor.key },
-        clusters: { temperatureMeasurement: { measuredValue: null, minMeasuredValue: -10000, maxMeasuredValue: 20000 }, bridgedDeviceBasicInformation: { reachable: false } },
+        clusters: sensor.kind === 'contact'
+          ? { booleanState: { stateValue: false }, bridgedDeviceBasicInformation: { reachable: false } }
+          : { temperatureMeasurement: { measuredValue: null, minMeasuredValue: -10000, maxMeasuredValue: 20000 }, bridgedDeviceBasicInformation: { reachable: false } },
       };
       if (sensor.key === 'battery') {
         accessory.clusters!.powerSource = {
@@ -113,7 +117,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       // explicit topology also makes Homebridge await its rebuild internally;
       // separate fire-and-forget remove/add calls can race during endpoint close.
       await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      const cluster = 'temperatureMeasurement';
+      const cluster = sensor.kind === 'contact' ? 'booleanState' : 'temperatureMeasurement';
       const deadline = Date.now() + 5000;
       while (!this.stopped && ((sensor.key === 'battery' && batteryEndpointNumber === undefined)
         || await matter.getAccessoryState(accessory.UUID, cluster) === undefined)) {
@@ -123,7 +127,7 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       if (this.stopped) return;
       this.uuids.set(sensor.key, accessory.UUID);
       await matter.updateAccessoryState(accessory.UUID, 'bridgedDeviceBasicInformation', { reachable: false });
-      await matter.updateAccessoryState(accessory.UUID, cluster, { measuredValue: null });
+      if (sensor.kind === 'temperature') await matter.updateAccessoryState(accessory.UUID, cluster, { measuredValue: null });
       if (sensor.key === 'battery') {
         if (batteryEndpointNumber === undefined) throw new Error('Battery SOC endpoint scope initializer did not run');
         this.batteryEndpointList = readBatteryEndpointList(await matter.getAccessoryState(accessory.UUID, 'powerSource'), batteryEndpointNumber);
@@ -152,11 +156,22 @@ export class DeyePlatform implements DynamicPlatformPlugin {
         try {
           const [raw] = snapshot.get(sensor.register);
           if (this.stopped) return;
-          const temperature = decodeTemperature(raw);
-          if (temperature === null) throw new Error(`Invalid temperature word: ${raw}`);
-          // Matter uses hundredths of a degree Celsius.
-          await matter.updateAccessoryState(uuid, 'temperatureMeasurement', { measuredValue: Math.round(temperature * 100) });
-          const display = `${temperature} °C`;
+          let display: string;
+          if (sensor.kind === 'contact') {
+            if (raw === 0xffff) throw new Error(`Invalid grid voltage word: ${raw}`);
+            const voltage = raw / 10;
+            const present = voltage >= (this.gridPresent ? 80 : 100);
+            // Matter true = contact detected (closed) = grid voltage present.
+            await matter.updateAccessoryState(uuid, 'booleanState', { stateValue: present });
+            this.gridPresent = present;
+            display = `${present ? 'power available (closed)' : 'power unavailable (open)'}, ${voltage} V`;
+          } else {
+            const temperature = decodeTemperature(raw);
+            if (temperature === null) throw new Error(`Invalid temperature word: ${raw}`);
+            // Matter uses hundredths of a degree Celsius.
+            await matter.updateAccessoryState(uuid, 'temperatureMeasurement', { measuredValue: Math.round(temperature * 100) });
+            display = `${temperature} °C`;
+          }
           await matter.updateAccessoryState(uuid, 'bridgedDeviceBasicInformation', { reachable: true });
           const reading = `${sensor.name}: ${display} (register=${sensor.register}, raw=${raw})`;
           if (this.available.has(sensor.key)) this.log.debug(reading);
@@ -168,7 +183,8 @@ export class DeyePlatform implements DynamicPlatformPlugin {
           this.log.warn(`${sensor.name} read/update failed at ${this.options.host}:${this.options.port}, register ${sensor.register}: ${String(error)}. Will retry next cycle.`);
           try {
             await matter.updateAccessoryState(uuid, 'bridgedDeviceBasicInformation', { reachable: false });
-            await matter.updateAccessoryState(uuid, 'temperatureMeasurement', { measuredValue: null });
+            // BooleanState cannot be null; failed voltage reads mark Grid unreachable.
+            if (sensor.kind === 'temperature') await matter.updateAccessoryState(uuid, 'temperatureMeasurement', { measuredValue: null });
           } catch (updateError) {
             this.log.warn(`Could not mark ${sensor.name} unavailable: ${String(updateError)}`);
           }

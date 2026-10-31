@@ -99,7 +99,7 @@ test('creates only Matter sensors, migrates HAP cache, preserves measurements, r
       }
     },
     unregisterPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
-      assert(state.has(api.hap.uuid.generate('homebridge-deye-inverter:gridPower')), 'replacement must be ready before removing contact');
+      assert(state.has(api.hap.uuid.generate('homebridge-deye-inverter:gridPower')), 'replacement must be ready before removing total PV');
       for (const accessory of accessories) { upgraded.push(accessory.UUID); state.delete(accessory.UUID); }
     },
     updateAccessoryState: async (uuid: string, cluster: string, values: Record<string, unknown>) => {
@@ -133,7 +133,7 @@ test('creates only Matter sensors, migrates HAP cache, preserves measurements, r
     api.signalFinished();
     await until(() => sensor('batteryPower')?.electricalPowerMeasurement.activePower === 0);
     await delay(20);
-    assert.equal(added.length, 8, 'all cached and new accessories must register current ownership');
+    assert.equal(added.length, 9, 'all cached and new accessories must register current ownership');
     assert.equal(added.find(accessory => accessory.context.sensorKey === 'dc')!.UUID, dcUuid);
     assert.equal(hapRegistration.mock.callCount(), 0);
     assert.deepEqual(unregister.mock.calls[0].arguments[2], [legacy]);
@@ -142,10 +142,10 @@ test('creates only Matter sensors, migrates HAP cache, preserves measurements, r
     assert.equal(sensor('battery').temperatureMeasurement.measuredValue, 3400);
     assert.equal(sensor('battery').powerSource.batPercentRemaining, 166, '83% must use Matter half-percent units');
     assert.deepEqual(sensor('battery').powerSource.endpointList, [37]);
-    for (const key of ['dc', 'ac', 'pv1', 'pv2', 'gridPower', 'loadPower', 'batteryPower']) {
+    for (const key of ['dc', 'ac', 'grid', 'pv1', 'pv2', 'gridPower', 'loadPower', 'batteryPower']) {
       assert.equal(sensor(key).powerSource, undefined, `${key} must not carry a storage-battery source`);
     }
-    assert.deepEqual(upgraded, [oldPv.UUID, oldGrid.UUID], 'battery rebuild is delegated to Homebridge; total PV is removed');
+    assert.deepEqual(upgraded, [oldPv.UUID], 'battery rebuild is delegated to Homebridge; total PV is removed');
     assert.equal(added.find(accessory => accessory.context.sensorKey === 'battery')!.UUID, batteryUuid);
     assert.deepEqual(registers.slice(0, 6), [90, 109, 150, 157, 169, 178]);
     assert.equal(sensor('pv1').electricalPowerMeasurement.powerMode, 1);
@@ -174,16 +174,30 @@ test('creates only Matter sensors, migrates HAP cache, preserves measurements, r
     assert.equal(sensor('battery').powerSource.batPercentRemaining, 0);
     batterySocRaw = 100; await cycle();
     assert.equal(sensor('battery').powerSource.batPercentRemaining, 200);
+    assert.equal(sensor('grid').booleanState.stateValue, true);
+    assert.equal(added.find(accessory => accessory.context.sensorKey === 'grid')!.UUID, oldGrid.UUID);
+    gridRaw = 900; await cycle();
+    assert.equal(sensor('grid').booleanState.stateValue, true, 'hold present down to 80 V');
+    gridRaw = 799; await cycle();
+    assert.equal(sensor('grid').booleanState.stateValue, false);
+    gridRaw = 999; await cycle();
+    assert.equal(sensor('grid').booleanState.stateValue, false, 'restore only at 100 V');
+    gridRaw = 1000; await cycle();
+    assert.equal(sensor('grid').booleanState.stateValue, true);
     gridRaw = 0; await cycle();
+    assert.equal(sensor('grid').booleanState.stateValue, false);
     assert.equal(sensor('gridPower').electricalPowerMeasurement.voltage, 0);
     assert.equal(sensor('gridPower').electricalPowerMeasurement.activePower, 0);
     gridRaw = 65535; await cycle();
     assert.equal(sensor('gridPower').electricalPowerMeasurement.voltage, null);
     assert.equal(sensor('gridPower').bridgedDeviceBasicInformation.reachable, false);
+    assert.equal(sensor('grid').bridgedDeviceBasicInformation.reachable, false);
     gridRaw = 2300; await cycle();
+    assert.equal(sensor('grid').booleanState.stateValue, true);
+    assert.equal(sensor('grid').bridgedDeviceBasicInformation.reachable, true);
     assert.equal(sensor('gridPower').electricalPowerMeasurement.voltage, 230000);
     assert.equal(sensor('gridPower').bridgedDeviceBasicInformation.reachable, true);
-    assert.equal(sensor('grid'), undefined, 'retired contact must never be recreated');
+    assert.equal(added.find(accessory => accessory.context.sensorKey === 'grid')!.deviceType, deviceTypes.ContactSensor);
     api.signalShutdown();
     const requests = registers.length;
     t.mock.timers.tick(60_000); await delay(20);

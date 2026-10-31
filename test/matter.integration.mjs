@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-test('all eight accessories use real Matter endpoints and keep battery scope through legacy-cache migration and restart', { timeout: 60000 }, async () => {
+test('all nine accessories use real Matter endpoints and keep battery scope through legacy-cache migration and restart', { timeout: 60000 }, async () => {
   const storage = await mkdtemp(join(tmpdir(), 'deye-matter-'));
   let batterySoc = 83;
   const logger = createServer(socket => {
@@ -47,7 +47,7 @@ test('all eight accessories use real Matter endpoints and keep battery scope thr
       for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { output += chunk; });
       const deadline = Date.now() + 15000;
       while (!output.includes('Battery Power: -500 W') && Date.now() < deadline && child.exitCode === null) await delay(50);
-      for (const name of ['PV1', 'PV2', 'Grid Power', 'Load Power', 'Battery Power']) assert(output.includes(`${run} Matter accessory: ${name}`), output);
+      for (const name of ['Grid', 'PV1 Power', 'PV2 Power', 'Grid Power', 'Load Power', 'Battery Power']) assert(output.includes(`${run} Matter accessory: ${name}`), output);
       assert(!output.includes('Failed to update'), output);
       assert(!output.includes('Failed to register Matter accessory'), output);
       assert(!output.includes('Matter sensor setup failed'), output);
@@ -55,7 +55,7 @@ test('all eight accessories use real Matter endpoints and keep battery scope thr
       // Wait for Homebridge's debounced cache write, then verify its actual state.
       await delay(2200);
       const cache = JSON.parse(await readFile(join(storage, 'matter', '0EDE01020306', 'accessories.json'), 'utf8'));
-      assert.equal(cache.length, 8);
+      assert.equal(cache.length, 9);
       for (const accessory of cache) {
         assert.equal(accessory.plugin, 'homebridge-deye-inverter', `${accessory.displayName} must retain plugin ownership after restore`);
         assert.equal(accessory.platform, 'DeyeInverter', `${accessory.displayName} must retain platform ownership after restore`);
@@ -78,7 +78,7 @@ test('all eight accessories use real Matter endpoints and keep battery scope thr
       const identity = { uuid: byKey.battery.uuid, endpoint: batteryEndpoint };
       if (originalBatteryIdentity) assert.deepEqual(identity, originalBatteryIdentity, 'migration/restart must preserve battery identity and assigned endpoint');
       else originalBatteryIdentity = identity;
-      for (const key of ['dc', 'ac', 'pv1', 'pv2', 'gridPower', 'loadPower', 'batteryPower']) {
+      for (const key of ['dc', 'ac', 'grid', 'pv1', 'pv2', 'gridPower', 'loadPower', 'batteryPower']) {
         assert.equal(byKey[key].clusters.powerSource, undefined, `${key} must not carry the storage battery source`);
       }
       for (const [key, mode, power, voltage, current] of [
@@ -92,18 +92,21 @@ test('all eight accessories use real Matter endpoints and keep battery scope thr
         assert.equal(epm.voltage, voltage); assert.equal(epm.activeCurrent, current);
         assert.equal(byKey[key].clusters.bridgedDeviceBasicInformation.reachable, true);
       }
-      for (const key of ['grid', 'pv', 'totalConsumptionEnergy', 'totalImportEnergy']) assert.equal(byKey[key], undefined);
+      for (const key of ['pv', 'totalConsumptionEnergy', 'totalImportEnergy']) assert.equal(byKey[key], undefined);
+      assert.equal(byKey.grid.deviceType.name, 'ContactSensor');
+      assert.equal(byKey.grid.clusters.booleanState.stateValue, true);
+      assert.equal(byKey.grid.clusters.bridgedDeviceBasicInformation.reachable, true);
       for (const key of ['dc', 'ac', 'battery']) assert.equal(byKey[key].clusters.bridgedDeviceBasicInformation.reachable, true);
-      assert(output.includes('Ready (Matter): DC Temperature, AC Temperature, Battery Temperature, PV1, PV2, Grid Power, Load Power, Battery Power'), output);
+      assert(output.includes('Ready (Matter): DC Temperature, AC Temperature, Battery Temperature, Grid, PV1 Power, PV2 Power, Grid Power, Load Power, Battery Power'), output);
       child.kill('SIGTERM');
       await new Promise(resolve => child.once('exit', resolve));
       child = undefined;
       if (index === 0) {
         // Reproduce an installed older plugin's node-wide source and stale SOC.
         // Change the cache only after shutdown so Homebridge cannot overwrite it.
-        for (const key of ['grid', 'pv', 'totalConsumptionEnergy', 'totalImportEnergy']) {
-          cache.push({ ...byKey.pv1, deviceType: key === 'grid' ? { name: 'ContactSensor', code: 21 } : byKey.pv1.deviceType, uuid: (await import('node:crypto')).randomUUID(), displayName: key, context: { sensorKey: key },
-            clusters: key === 'grid' ? { booleanState: { stateValue: true } } : key === 'pv' ? { electricalPowerMeasurement: { powerMode: 1, activePower: 1000 } } : { electricalEnergyMeasurement: { cumulativeEnergyImported: null } } });
+        for (const key of ['pv', 'totalConsumptionEnergy', 'totalImportEnergy']) {
+          cache.push({ ...byKey.pv1, deviceType: byKey.pv1.deviceType, uuid: (await import('node:crypto')).randomUUID(), displayName: key, context: { sensorKey: key },
+            clusters: key === 'pv' ? { electricalPowerMeasurement: { powerMode: 1, activePower: 1000 } } : { electricalEnergyMeasurement: { cumulativeEnergyImported: null } } });
         }
         byKey.battery.clusters.powerSource.endpointList = [];
         byKey.battery.clusters.powerSource.batPercentRemaining = 198;

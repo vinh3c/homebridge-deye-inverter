@@ -1,13 +1,13 @@
 # homebridge-deye-inverter
 
-A read-only Homebridge plugin exposing eight Matter accessories over Modbus TCP: three temperatures and five electrical branches. Matter runs inside Homebridge.
+A read-only Homebridge plugin exposing nine Matter accessories over Modbus TCP: three temperatures, Grid contact and five electrical branches. Matter runs inside Homebridge.
 
 The mapping targets compatible single-phase hybrid inverters. Earlier temperature, SOC and PV readings were checked on SUN-6K-SG05LP1-EU-SM2-P; the newly added electrical registers still need comparison with the inverter display. Other models are not automatically supported. Accessory metadata remains generic.
 
 | Accessory | Power (W) register | Voltage register / scale | Current register / scale |
 | --- | --- | --- | --- |
-| PV1 (DC) | 186 | 109 / 0.1 V | 110 / 0.1 A |
-| PV2 (DC) | 187 | 111 / 0.1 V | 112 / 0.1 A |
+| PV1 Power (DC) | 186 | 109 / 0.1 V | 110 / 0.1 A |
+| PV2 Power (DC) | 187 | 111 / 0.1 V | 112 / 0.1 A |
 | Grid Power (AC) | 169 | 150 / 0.1 V | 160 / 0.01 A |
 | Load Power (AC) | 178 | 157 / 0.1 V | 179 / 0.01 A |
 | Battery Power (DC) | 190 | 183 / 0.01 V | 191 / 0.01 A |
@@ -21,6 +21,7 @@ The mapping follows the [Deye Modbus protocol](https://www.photovoltaikforum.com
 | DC Temperature | 90 | (raw - 1000) / 10 °C |
 | AC Temperature | 91 | (raw - 1000) / 10 °C |
 | Battery Temperature | 182 | (raw - 1000) / 10 °C |
+| Grid contact | 150 | Voltage presence: closed at >=100 V, opens below 80 V |
 | Battery SOC detail | 184 | 0–100%, on Battery Temperature only |
 
 ## Installation and upgrade
@@ -33,9 +34,9 @@ Requires Homebridge >=2.2 and <3, Node.js ^22.10 or ^24, and Matter enabled on t
 
 Configuration: platform DeyeInverter, required host, optional port (default 502). The plugin uses unit ID 1 and a five-second request timeout. It does not change pairing or bridge settings.
 
-This version removes **Grid contact**, **Total Consumption Energy**, **Total Import Energy** and combined **PV**. After all five replacement electrical endpoints are ready, their old cached accessories are unregistered. PV1/PV2 reuse existing identities when available. Temperature identities remain unchanged. Names, room assignments and automations for removed accessories may need updating. Cached HAP sensors are removed only after the Matter replacements are ready. All current Matter accessories re-register ownership on every startup.
+This version retains **Grid contact** alongside **Grid Power**, and removes **Total Consumption Energy**, **Total Import Energy** and combined **PV**. After all five replacement electrical endpoints are ready, their old cached accessories are unregistered. Grid contact and PV1/PV2 reuse existing identities when available. Temperature identities remain unchanged. Names, room assignments and automations for removed accessories may need updating. Cached HAP sensors are removed only after the Matter replacements are ready. All current Matter accessories re-register ownership on every startup.
 
-Each electrical branch publishes W, A and V on one ElectricalSensor, internally in mW/mA/mV. Earlier combined PV watts were observed in Apple Home; display of the new endpoints and A/V still needs verification on the deployed bridge. Homebridge UI 5.29.0 uses an unknown-device tile for ElectricalSensor and may show no values. Successful endpoint tests do not establish Apple Home presentation. Cumulative energy is no longer published or polled.
+Each electrical branch publishes W, A and V on one ElectricalSensor, internally in mW/mA/mV. The user confirmed Apple Home displays power on 2026-11-01; current and voltage do not appear in their UI. These attributes remain published through Matter. Homebridge UI 5.29.0 uses an unknown-device tile for ElectricalSensor and may show no values. Successful endpoint tests do not establish Apple Home presentation. Cumulative energy is no longer published or polled.
 
 ## Polling and failure handling
 
@@ -43,7 +44,7 @@ Full single-phase polls use six sequential groups: **90–91**, **109–112**, *
 
 A failed register group clears affected electrical attributes to null while preserving independent values. An incomplete branch is marked unreachable and retried next cycle. Failed Matter updates also clear stale electrical state. Successful first readings and recoveries log at info level, subsequent readings at debug level. Logs include raw words and register addresses.
 
-Temperature uses hundredths of a degree inside Matter; invalid readings become null/unreachable. Grid voltage is available on Grid Power. Zero watts alone does not imply an outage: the grid can be energized without import/export. Voltage indicates voltage presence, not relay state or grid quality. The derived Grid On/Off contact and CLI grid/contact fields have been removed.
+Temperature uses hundredths of a degree inside Matter; invalid readings become null/unreachable. Grid voltage is available on Grid Power. Zero watts alone does not imply an outage: the grid can be energized without import/export. Voltage indicates voltage presence, not relay state or grid quality. Grid contact uses the same voltage read: true/closed means voltage present (turns on at 100 V, stays on down to 80 V); false/open means voltage absent. Read failures mark it unreachable and preserve the last boolean state. CLI output remains measurements only.
 
 Storage battery SOC remains a detail on Battery Temperature through PowerSource, using half-percent units internally. Its endpointList contains only that accessory's actual assigned endpoint. Initialization clears cached SOC and scopes the source before readiness; the battery type is rebuilt with its existing UUID on each startup because Homebridge does not serialize custom initializers. SOC errors do not discard a valid temperature. No electrical branch carries this battery source. This is not a declared native BatteryStorage device or a verified battery UI/chart.
 

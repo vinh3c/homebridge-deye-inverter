@@ -4,8 +4,8 @@ import type { RegisterSnapshot } from './modbus.js';
 
 // Single-phase hybrid map. Read reported active power; V * A is not active AC power.
 export const electricalSensors = [
-  { key: 'pv1', name: 'PV1', mode: 1, power: 186, voltage: 109, current: 110, voltageScale: 0.1, currentScale: 0.1, signed: false },
-  { key: 'pv2', name: 'PV2', mode: 1, power: 187, voltage: 111, current: 112, voltageScale: 0.1, currentScale: 0.1, signed: false },
+  { key: 'pv1', name: 'PV1 Power', mode: 1, power: 186, voltage: 109, current: 110, voltageScale: 0.1, currentScale: 0.1, signed: false },
+  { key: 'pv2', name: 'PV2 Power', mode: 1, power: 187, voltage: 111, current: 112, voltageScale: 0.1, currentScale: 0.1, signed: false },
   { key: 'gridPower', name: 'Grid Power', mode: 2, power: 169, voltage: 150, current: 160, voltageScale: 0.1, currentScale: 0.01, signed: true },
   { key: 'loadPower', name: 'Load Power', mode: 2, power: 178, voltage: 157, current: 179, voltageScale: 0.1, currentScale: 0.01, signed: true },
   { key: 'batteryPower', name: 'Battery Power', mode: 1, power: 190, voltage: 183, current: 191, voltageScale: 0.01, currentScale: 0.01, signed: true },
@@ -66,7 +66,7 @@ export class PowerSensors {
       this.log.info(`${cached ? 'Restored' : 'Added'} Matter accessory: ${sensor.name}`);
     }
     if (stopped()) return;
-    const obsolete = [...this.cached.values()].filter(item => ['grid', 'pv', 'totalConsumptionEnergy', 'totalImportEnergy'].includes(item.context.sensorKey));
+    const obsolete = [...this.cached.values()].filter(item => ['pv', 'totalConsumptionEnergy', 'totalImportEnergy'].includes(item.context.sensorKey));
     if (obsolete.length) {
       await matter.unregisterPlatformAccessories(plugin, platform, obsolete);
       this.log.info(`Removed obsolete Matter accessories: ${obsolete.map(item => item.displayName).join(', ')}`);
