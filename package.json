@@ -2,7 +2,7 @@
   "name": "homebridge-deye-inverter",
   "displayName": "Deye Inverter",
   "version": "1.0.3",
-  "description": "Homebridge temperature and grid power contact sensors for Deye inverters via Modbus TCP",
+  "description": "Deye inverter temperature, grid, storage battery, energy and PV measurements via Homebridge Matter",
   "main": "dist/index.js",
   "keywords": [
     "homebridge-plugin",
@@ -12,7 +12,7 @@
   ],
   "engines": {
     "node": "^22.10.0 || ^24.0.0",
-    "homebridge": ">=1.8.0 <3.0.0"
+    "homebridge": ">=2.2.0 <3.0.0"
   },
   "files": [
     "dist/**/*.js",
@@ -30,14 +30,14 @@
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "test:homebridge": "npm run build && node --test test/homebridge.integration.mjs"
+    "test:matter": "npm run build && node --test test/matter.integration.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
-    "homebridge": "^1.11.4",
+    "homebridge": "^2.4.0",
     "tsx": "^4.20.0",
     "typescript": "^5.8.3"
   }

@@ -1,106 +1,107 @@
 # homebridge-deye-inverter
 
-A Homebridge plugin that exposes three HomeKit temperature sensors (**DC Temperature**, **AC Temperature**, and **Battery Temperature**) and an **Grid** contact sensor for grid power availability.
-Designed for the **Deye SUN-6K-SG05LP1-EU-SM2-P** inverter over Modbus TCP.
+A Homebridge plugin that exposes **seven Matter accessories** for a **Deye SUN-6K-SG05LP1-EU-SM2-P** inverter over Modbus TCP. Matter runs inside Homebridge; the plugin does not create HAP sensors.
 
-Open your logger settings, **enable Modbus**, and enter the logger's IP address in the plugin settings. The default port is `502`.
-
-The plugin reads holding registers (FC03): DC `90`, AC/heatsink `91`, and battery `182`, using `(raw - 1000) / 10` to convert values to °C. It only reads data and does not change inverter settings.
-
-**Grid** reads grid-side L1-N voltage from register `150`, using `raw / 10` volts as documented in the [Deye Modbus protocol](https://www.photovoltaikforum.com/core/attachment/449240-deye-modbus-protocol-v118-pdf/). In Apple Home, **Closed** means **Grid On** (grid power present) and **Open** means **Grid Off** (grid power absent). The contact closes at **100 V or above** and opens **below 80 V**; between these thresholds it keeps its previous state to avoid rapid toggling. On startup, it requires at least 100 V to report power present. This detects voltage at the Grid input, not whether the inverter has connected its grid relay or whether voltage meets grid quality limits. A generator connected to that input would also be detected as power present.
-
-The new contact sensor has been tested with a simulated logger and Homebridge; its voltage reading and outage detection still need verification on the physical inverter. A missing voltage word (`0xffff`) or communication failure reports a sensor error instead of a power outage. Polling resumes automatically after a failure.
-
-## Tested model
-
-All three temperatures have been successfully read from a **Deye SUN-6K-SG05LP1-EU-SM2-P** through a logger with Modbus enabled on port `502`.
-One live reading returned **62.4°C DC**, **55.9°C AC**, and **34.0°C battery**. These are readings from that test, not fixed values.
-
-The Homebridge integration has been tested with the Homebridge API/HAP and a simulated logger. Pairing with Apple Home has not yet been tested on a live installation.
-
-## Installation
-
-Requires Node.js 22.10+ within the 22.x series, or Node.js 24.x, and Homebridge 1.8+ or 2.x.
-Once published to npm, search for **homebridge-deye-inverter** in the Homebridge UI and install it, or run:
-
-```sh
-npm install -g homebridge-deye-inverter
-```
-
-To activate the plugin:
-
-1. Open **Homebridge UI → Plugins → Deye Inverter → Plugin Config**.
-2. Enter your logger's IP address.
-3. Click **Save**, then **Restart Homebridge**.
-
-The logger IP field starts empty and must be filled in. The UI saves the platform configuration for you. No manual JSON editing is needed. Installing the package alone does not activate the sensors; the plugin logs **SETUP REQUIRED** with these steps if its platform has not started. A platform with a missing or blank IP also logs setup instructions and does not attempt to connect or create sensors.
-
-For reference, the saved platform configuration looks like this:
-
-```json
-{
-  "platform": "DeyeInverter",
-  "host": "192.168.5.190"
-}
-```
-
-Restart Homebridge. The four sensors will be available through the bridge paired with Apple Home.
-The machine running Homebridge must be able to reach the logger's IP address and port.
-
-Only the logger's IP address is needed. The port is optional and can be changed under **Advanced settings** in the Homebridge UI.
-
-| Setting | Default | Description |
+| Sensor | Holding registers (FC03) | Reading |
 | --- | --- | --- |
-| `host` | None — required | Logger IP address or hostname |
-| `port` | `502` | Modbus TCP port |
+| DC Temperature | 90 | `(raw - 1000) / 10` °C |
+| AC Temperature | 91 | `(raw - 1000) / 10` °C; heatsink temperature |
+| Battery Temperature | 182 | `(raw - 1000) / 10` °C |
+| Battery Percent (on Battery Temperature) | 184 | Storage battery SOC, raw 0–100% |
+| Grid | 150 | `raw / 10` V, exposed as a contact sensor |
+| Total Consumption Energy | 85 low word + 86 high word | `(high * 65536 + low) / 10` kWh |
+| Total Import Energy | 78 low word + 80 high word | `(high * 65536 + low) / 10` kWh; grid purchases |
+| PV | 186 + 187 | Sum of reported PV input powers, W |
 
-The plugin waits 10 seconds after each polling cycle completes before starting the next cycle. Each request has a 5-second timeout, and requests never overlap. No polling or timeout configuration is needed. Failed sensors report a communication error instead of serving stale readings, and recover automatically after a successful read. Grid power changes are detected on the next successful voltage read, not instantaneously.
+The plugin only reads the inverter and never writes its settings. The register mapping is documented in the [Deye Modbus protocol](https://www.photovoltaikforum.com/core/attachment/449240-deye-modbus-protocol-v118-pdf/).
 
-AC refers to the inverter's heatsink sensor. Battery temperature is the value reported by the inverter, not individual BMS cell temperatures.
-The plugin uses the inverter's default communication address of `1`, which worked with the tested model. You do not need to find or configure this address.
+## Requirements and installation
 
-Sensor names are **DC Temperature**, **AC Temperature**, **Battery Temperature**, and **Grid**. You can rename them in Apple Home.
-The plugin preserves sensor identities when the logger's IP address changes. Each platform configuration supports one inverter.
+Requires Node.js 22.10+ in the 22.x series or Node.js 24.x, and **Homebridge 2.2 or newer (below 3.0)**. Matter must be enabled on the bridge running this plugin, including the child bridge when applicable.
 
-## Development and local installation
-
-```sh
-npm ci
-npm run typecheck
-npm test
-npm run test:homebridge
-npm pack
-```
-
-`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.3.tgz`. Install the local package on your Homebridge machine with:
+Install `homebridge-deye-inverter` through Homebridge UI, or install a locally built package:
 
 ```sh
 npm install -g ./homebridge-deye-inverter-1.0.3.tgz
 ```
 
-A CLI is also available to test the logger directly from the source checkout:
+1. Enable Modbus in the logger settings.
+2. In **Homebridge UI → Plugins → Deye Inverter → Plugin Config**, enter the logger IP address.
+3. Enable Matter on that Homebridge bridge or child bridge, save and restart.
+
+All seven accessories use the Matter connection. The bridge's existing HAP connection does not expose them. Matter accessories may not appear in Homebridge UI's HAP accessories screen. Their presentation in a controller depends on its device-type support; energy history charts are not guaranteed.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `host` | Required | Logger IP address or hostname |
+| `port` | `502` | Modbus TCP port |
+
+The platform name is `DeyeInverter`. The plugin uses unit ID `1`, a five-second request timeout, and sequential requests. Full polls read three compact groups: **78–91**, **150**, and **182–187** (21 words total). Plugin cycles without an energy update read **90–91**, **150**, and **182–187** (9 words). The CLI full output always includes energy. The inverter also accepts one 110-word request spanning 78–187, but a small live comparison found similar latency for both approaches; compact groups transfer much less unused data and isolate request failures. Only requested metrics are decoded. Multiword counters stay in one request, and all requests respect the FC03 125-word limit. A failed group invalidates its associated readings while independent groups are still read. The plugin waits ten seconds after the polling cycle completes; energy is updated approximately once per minute. Missing host or disabled/unavailable Matter produces setup instructions without starting Modbus polling.
+
+The **Battery Temperature** accessory also carries storage battery percentage through Matter PowerSource. It is the inverter-reported SOC of the storage battery, not a separate sensor's backup battery. Matter uses half-percent units internally (`83%` is encoded as `166`); CLI/log output uses the actual percentage as `batteryPercent`. Invalid words (including `0xffff` or values above 100) clear the percentage to `null`, independently of temperature. On upgrade, an older Battery Temperature endpoint without PowerSource is rebuilt once with its original UUID; controller presentation may refresh. The percentage is an accessory detail, not a promised standalone battery tile or live chart in Apple Home. Apple Home display/update behavior has not been verified.
+
+## Migrating from older plugin versions
+
+Older versions exposed temperature and Grid through HomeKit HAP. This version replaces them with Matter sensors. Once all seven Matter endpoints are ready, the plugin unregisters its cached HAP accessories to avoid duplicates. It leaves the HAP cache in place if Matter is disabled or setup fails.
+
+The Matter sensors have separate identities from the old HAP accessories. Room assignments, names and automations associated with the old accessories may need to be recreated. Other plugins and their HAP accessories are unaffected. The plugin does not modify Homebridge's bridge configuration or automatically pair any controller.
+
+## Readings and failures
+
+Matter temperatures are reported in **0.01°C** (`62.4°C` becomes `6240`). An unavailable reading becomes `null`, and the sensor is marked unreachable until a successful read. Cached readings are invalidated on startup.
+
+Grid is **Closed / contact detected** when grid voltage reaches **100 V**, and **Open / contact not detected** when voltage falls below **80 V**. Between these thresholds it keeps its previous state. Matter `booleanState.stateValue = true` means Grid On. Startup requires at least 100 V. A missing voltage word (`0xffff`) or communication failure marks Grid unreachable instead of reporting a power outage. This measures voltage at the Grid input, not grid relay connection or grid quality.
+
+Total Consumption Energy measures cumulative load consumption, including energy supplied from grid, solar and battery, rather than just grid purchases. The measured scope depends on the inverter's wiring and metering configuration. Read registers 85–86 together as an unsigned 32-bit number, low word first. CLI readings use `totalConsumptionEnergy`, and Homebridge logs use **Total Consumption Energy**. The internal Matter adapter converts the value to mWh and includes the observation timestamp. The plugin preserves the inverter's counter and does not compute daily differences or invent its start/reset date. Failed reads publish `null`, with automatic retry.
+
+First successful readings and recoveries are logged at info level; subsequent readings use debug logging. Failures include the logger address and register. Live Modbus reads have confirmed temperatures and energy on the stated model (one observed energy reading was **568.1 kWh**, raw `[5681, 0]`). These are test observations, not fixed values. Apple Home presentation has not been verified.
+
+Total Import Energy is a separate counter for energy bought from the grid. Register **79 is grid frequency**, so read 78–80 together but combine only words **78 and 80**. The two energy counters have distinct Matter accessory identities and must not overwrite each other. Do not add them together as a whole-home total. `--energy-only` reads **78–86** in one FC03 request and logs both counters in kWh. One live reading returned `totalConsumptionEnergy = 569.7` and `totalImportEnergy = 60.3`; compare with Total Load and Grid Buy on the inverter to confirm scope.
+
+PV is a single total instantaneous DC power measurement, separate from cumulative kWh counters. The single-phase CLI logs only `pvTotalPowerW`, the sum of reported watts from registers 186 and 187. It does not read or expose separate PV input voltages, currents or powers. Zero is valid, including at night. If either input's power is invalid/unavailable, the total is `null`, not a partial sum. The raw register pair remains available for diagnostics under `raw.pvTotalPowerW`.
+
+The plugin exposes one read-only **PV** Matter ElectricalSensor accessory in DC mode, using mW internally. Cached PV1/PV2 accessories from an earlier version are removed after the total PV endpoint is ready. Apple Home's display of this measurement is not verified; no fake switch or cumulative-energy value is used to represent instantaneous power. Three-phase CLI profiles and the explicit `--grid-only`/`--energy-only` modes omit this single-phase PV reading.
+
+## CLI checks on the real inverter
+
+Use the CLI to compare register values with the inverter display. It does not start Homebridge, advertise Matter, or pair with Apple Home. It uses `.env` based on `.env.example`; Homebridge uses its platform settings instead.
 
 ```sh
 npm start -- --once
-npm start
-npm start -- --grid-only
+npm start -- --energy-only --once
+npm start -- --grid-only --once
 ```
 
-The CLI supports a `.env` file based on `.env.example`. Homebridge uses the platform settings above, not `.env`.
-The single-phase CLI also logs `gridVoltageV`, `grid` (`On`/`Off`), `contact` (`Closed`/`Open`), and the raw Grid register. Use `--grid-only` to read just Grid for live outage testing, or combine it with `--once` for one reading. It uses the same 100 V / 80 V thresholds as Homebridge. For the three-phase CLI profile, Grid is omitted unless you explicitly supply a model-appropriate `GRID_REGISTER`. A read failure logs an error rather than an `Off` reading.
-After `npm run build`, use `npm run serve -- --once` to run the compiled CLI.
-Unit tests use a simulated Modbus TCP logger and the Homebridge API/HAP, including grid voltage thresholds, outage detection, and fault recovery. `npm run test:homebridge` also starts an isolated real Homebridge instance, loads the compiled plugin, and verifies all four sensors through its HAP endpoint and persisted accessory cache. Tests do not access a real inverter.
+Omit `--once` for continuous foreground logging and stop with **Ctrl+C**. To save all readings in PowerShell:
 
-## Troubleshooting missing sensors
+```powershell
+npm start | Tee-Object -FilePath .local/deye.log -Append
+```
 
-Installing the package alone does not enable its platform. Save the configuration shown above in Homebridge, then restart Homebridge. The platform name must be `DeyeInverter`.
+To save only energy readings:
 
-The plugin logs `Plugin loaded (Homebridge ..., Node ...)` as soon as Homebridge invokes the plugin entry point, even before platform configuration is loaded. If no platform starts in that process, it logs **SETUP REQUIRED** and the exact Homebridge UI steps to activate the plugin, with a reminder to check child bridge logs when applicable.
+```powershell
+npm start -- --energy-only | Tee-Object -FilePath .local/energy.log
+```
 
-Platform startup logs include `Starting DeyeInverter platform`, the logger address, `Added accessory:` or `Restored accessory:` for each sensor, and `Ready: DC Temperature, AC Temperature, Battery Temperature, Grid`. The first successful reading and recovery after a failed read are logged at the normal info level; subsequent readings use debug logging. Read failures include the logger address, register, and error.
-If the initialization line is missing, check that the platform configuration was saved and the plugin is enabled. If there is a load error, inspect the preceding Homebridge logs.
+The single-phase output includes temperatures, Grid voltage and contact state, `batteryPercent`, `totalConsumptionEnergy`, `totalImportEnergy`, `energyUnit` (kWh), raw words, register addresses, and grouped Modbus request ranges. `--energy-only` is supported only for the single-phase profile and cannot be combined with `--grid-only`. Three-phase CLI profiles omit energy and require an explicit model-appropriate `GRID_REGISTER` for Grid.
 
-If you enabled a child bridge, pair that child bridge with Apple Home separately using its QR code. Otherwise, the sensors are exposed through your existing main bridge. The sensors are registered before any Modbus reads, so a logger connection error should produce unresponsive sensors rather than prevent their creation.
+After building, the compiled CLI can be run with `npm run serve -- --once`.
+
+## Development and automated checks
+
+```sh
+npm ci
+npm run typecheck
+npm test
+npm run test:matter
+npm pack
+```
+
+Unit tests use a simulated logger to verify decoding, Matter sensor registration, temperature units, Grid hysteresis, fault recovery, HAP migration and shutdown. `test:matter` uses an isolated Homebridge with seven real Matter endpoints, a simulated Matter network and a loopback Modbus logger. It verifies persisted values, measurement events and restoration after restart, without opening Matter UDP sockets or advertising on the LAN. Automated tests do not access the real inverter or pair with Apple Home. There is one Matter integration test suite; the old HAP integration test has been removed.
+
+`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.3.tgz`.
+
 
 ## GitHub Actions and npm publishing
 

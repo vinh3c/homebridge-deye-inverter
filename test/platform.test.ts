@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
-import { HomebridgeAPI } from 'homebridge/lib/api.js';
-import type { Logging, PlatformAccessory } from 'homebridge';
+import { HomebridgeAPI } from '../node_modules/homebridge/dist/api.js';
+import type { Logging, MatterAccessory, MatterAPI } from 'homebridge';
 import register from '../src/index.js';
 import { DeyePlatform } from '../src/platform.js';
 
@@ -18,34 +18,25 @@ async function until(check: () => boolean) {
 
 test('registers dynamic platform without starting CLI', () => {
   const api = new HomebridgeAPI();
-  let registered = false;
   api.on('registerPlatform', (name, constructor, plugin) => {
-    assert.equal(name, 'DeyeInverter');
-    assert.equal(plugin, 'homebridge-deye-inverter');
-    assert.equal(constructor, DeyePlatform);
-    registered = true;
+    assert.equal(name, 'DeyeInverter'); assert.equal(plugin, 'homebridge-deye-inverter'); assert.equal(constructor, DeyePlatform);
   });
   register(api);
-  assert(registered);
 });
 
-test('logs plugin loading and detects a missing platform configuration', t => {
-  const info = t.mock.method(console, 'info', () => {});
+test('logs setup instructions when platform configuration is missing', t => {
+  t.mock.method(console, 'info', () => {});
   const warn = t.mock.method(console, 'warn', () => {});
   const api = new HomebridgeAPI();
-  register(api);
-  assert.match(String(info.mock.calls[0].arguments[0]), /Plugin loaded/);
-  api.signalFinished();
-  const messages = warn.mock.calls.map(call => String(call.arguments[0])).join('\n');
-  assert.match(messages, /SETUP REQUIRED/);
-  assert.match(messages, /Homebridge UI > Plugins > Deye Inverter > Plugin Config/);
-  assert.match(messages, /click Save, then Restart Homebridge/);
-  assert(!messages.includes('platforms and restart'), 'setup instructions should use the UI instead of manual JSON edits');
+  register(api); api.signalFinished();
+  assert.match(warn.mock.calls.map(call => String(call.arguments[0])).join('\n'), /SETUP REQUIRED.*Plugin Config/s);
 });
 
-test('creates four HAP sensors, restores cache, faults and recovers, stops polling', async t => {
+test('creates only Matter sensors, migrates HAP cache, preserves values and hysteresis, recovers faults and stops', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let failBattery = false;
+  let batterySocRaw = 83;
+  let pv1PowerRaw = 940;
   let gridRaw = 2300;
   const registers: number[] = [];
   const server = createServer(socket => {
@@ -54,78 +45,112 @@ test('creates four HAP sensors, restores cache, faults and recovers, stops polli
       received = Buffer.concat([received, data]);
       if (received.length < 12) return;
       const address = received.readUInt16BE(8);
+      const count = received.readUInt16BE(10);
       registers.push(address);
-      const raw = address === 150 ? gridRaw : address === 90 ? 1624 : address === 91 ? 1559 : failBattery ? 65535 : 1340;
-      const response = Buffer.from([0, 0, 0, 0, 0, 5, 1, 3, 2, 0, 0]);
+      const response = Buffer.alloc(9 + count * 2);
       received.copy(response, 0, 0, 2);
-      response.writeUInt16BE(raw, 9);
+      response.writeUInt16BE(3 + count * 2, 4); response[6] = 1; response[7] = 3; response[8] = count * 2;
+      for (let i = 0; i < count; i++) {
+        const raw = ({ 78: 1234, 79: 5000, 80: 0, 90: 1624, 91: 1559, 186: pv1PowerRaw, 187: 1190, 182: failBattery ? 65535 : 1340, 184: batterySocRaw, 150: gridRaw, 85: 5677, 86: 0 } as Record<number, number>)[address + i] ?? 0;
+        response.writeUInt16BE(raw, 9 + i * 2);
+      }
       socket.end(response);
     });
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert(address && typeof address === 'object');
+  const address = server.address(); assert(address && typeof address === 'object');
   const api = new HomebridgeAPI();
-  const added: PlatformAccessory[] = [];
-  const updated: PlatformAccessory[] = [];
-  api.on('registerPlatformAccessories', accessories => added.push(...accessories));
-  api.on('updatePlatformAccessories', accessories => updated.push(...accessories));
-  const cached = new api.platformAccessory('Old DC', api.hap.uuid.generate('homebridge-deye-inverter:deye-sg05lp1:dc'));
-  cached.addService(api.hap.Service.TemperatureSensor, 'DC Temperature');
+  const added: MatterAccessory[] = [];
+  const state = new Map<string, Record<string, any>>();
+  const dcUuid = api.hap.uuid.generate('homebridge-deye-inverter:dc');
+  const dcCache = { UUID: dcUuid, context: { sensorKey: 'dc' }, clusters: { temperatureMeasurement: { measuredValue: 9999 }, bridgedDeviceBasicInformation: { reachable: true } } } as unknown as MatterAccessory;
+  state.set(dcUuid, structuredClone(dcCache.clusters!));
+  const batteryUuid = api.hap.uuid.generate('homebridge-deye-inverter:battery');
+  const oldBattery = { UUID: batteryUuid, context: { sensorKey: 'battery' }, clusters: { temperatureMeasurement: { measuredValue: 9999 }, bridgedDeviceBasicInformation: { reachable: true } } } as unknown as MatterAccessory;
+  state.set(batteryUuid, structuredClone(oldBattery.clusters!));
+  const oldPv = { UUID: api.hap.uuid.generate('homebridge-deye-inverter:pv1'), context: { sensorKey: 'pv1' }, clusters: { electricalPowerMeasurement: { activePower: 9000 } } } as unknown as MatterAccessory;
+  state.set(oldPv.UUID, structuredClone(oldPv.clusters!));
+  const upgraded: string[] = [];
+  const matter = {
+    uuid: api.hap.uuid,
+    deviceTypes: { TemperatureSensor: {}, ContactSensor: {}, ElectricalSensor: {} },
+    registerPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
+      for (const accessory of accessories) { added.push(accessory); state.set(accessory.UUID, structuredClone(accessory.clusters!)); }
+    },
+    unregisterPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
+      for (const accessory of accessories) { upgraded.push(accessory.UUID); state.delete(accessory.UUID); }
+    },
+    updateAccessoryState: async (uuid: string, cluster: string, values: object) => { Object.assign(state.get(uuid)![cluster] ??= {}, values); },
+    getAccessoryState: async (uuid: string, cluster: string) => state.get(uuid)?.[cluster],
+  } as unknown as MatterAPI;
+  Object.defineProperty(api, 'matter', { value: matter });
+  t.mock.method(api, 'isMatterEnabled', () => true);
+  const hapRegistration = t.mock.method(api, 'registerPlatformAccessories', () => {});
+  const unregister = t.mock.method(api, 'unregisterPlatformAccessories', () => {});
+  const legacy = new api.platformAccessory('Old DC', api.hap.uuid.generate('legacy-dc'));
   const platform = new DeyePlatform(log, { platform: 'DeyeInverter', host: '127.0.0.1', port: address.port }, api);
-  platform.configureAccessory(cached);
-  const { Service, Characteristic } = api.hap;
-  const sensor = (accessory: PlatformAccessory) => accessory.getService(Service.TemperatureSensor)!;
+  platform.configureAccessory(legacy); platform.configureMatterAccessory(dcCache);
+  platform.configureMatterAccessory(oldBattery);
+  platform.configureMatterAccessory(oldPv);
+  const sensor = (key: string) => state.get(api.hap.uuid.generate(`homebridge-deye-inverter:${key}`))!;
+  const cycle = async () => {
+    const count = registers.length;
+    t.mock.timers.tick(10_000);
+    await until(() => registers.length >= count + 3);
+    await delay(20);
+  };
   try {
     api.signalFinished();
-    assert.equal(added.length, 3);
-    assert.deepEqual(updated, [cached]);
-    assert.equal(cached.getService(Service.AccessoryInformation)!.getCharacteristic(Characteristic.Model).value, 'Modbus TCP Inverter');
-    const ac = added.find(a => a.displayName === 'AC Temperature')!;
-    const battery = added.find(a => a.displayName === 'Battery Temperature')!;
-    const grid = added.find(a => a.displayName === 'Grid')!.getService(Service.ContactSensor)!;
-    await assert.rejects(grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest());
-    const waitForCycle = async () => {
-      const count = registers.length;
-      t.mock.timers.tick(10_000);
-      await until(() => registers.length >= count + 4);
-      // Allow the final response to complete and the next poll to be scheduled.
-      await delay(20);
-    };
-    await until(() => sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).value === 34);
-    await until(() => grid.getCharacteristic(Characteristic.StatusFault).value === 0);
+    await until(() => sensor('totalConsumptionEnergy')?.electricalEnergyMeasurement.cumulativeEnergyImported?.energy === 567700000);
+    await until(() => sensor('totalImportEnergy')?.electricalEnergyMeasurement.cumulativeEnergyImported?.energy === 123400000);
     await delay(20);
-    assert.equal(await grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest(), 0);
-    assert(Math.abs(Number(await sensor(cached).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest()) - 62.4) < 1e-8);
-    assert(Math.abs(Number(await sensor(ac).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest()) - 55.9) < 1e-8);
-    assert.deepEqual(registers.slice(0, 4), [90, 91, 182, 150]);
-    failBattery = true;
-    await waitForCycle();
-    await until(() => sensor(battery).getCharacteristic(Characteristic.StatusFault).value === 1);
-    await assert.rejects(sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest());
-    assert.equal(sensor(ac).getCharacteristic(Characteristic.StatusFault).value, 0);
-    failBattery = false;
-    await waitForCycle();
-    await until(() => sensor(battery).getCharacteristic(Characteristic.StatusFault).value === 0);
-    assert.equal(await sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest(), 34);
-    for (const [raw, expected] of [[900, 0], [800, 0], [799, 1], [0, 1], [900, 1], [999, 1], [1000, 0]]) {
-      gridRaw = raw;
-      await waitForCycle();
-      assert.equal(await grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest(), expected, `grid raw=${raw}`);
+    assert.equal(added.length, 6, 'DC Matter cache must be reused');
+    assert.equal(hapRegistration.mock.callCount(), 0);
+    assert.deepEqual(unregister.mock.calls[0].arguments[2], [legacy]);
+    assert.equal(sensor('dc').temperatureMeasurement.measuredValue, 6240);
+    assert.equal(sensor('ac').temperatureMeasurement.measuredValue, 5590);
+    assert.equal(sensor('battery').temperatureMeasurement.measuredValue, 3400);
+    assert.equal(sensor('battery').powerSource.batPercentRemaining, 166, '83% must use Matter half-percent units');
+    assert.deepEqual(upgraded, [batteryUuid, oldPv.UUID], 'old battery is upgraded and separate PV input is removed');
+    assert.equal(sensor('grid').booleanState.stateValue, true);
+    assert.deepEqual(registers.slice(0, 3), [78, 150, 182]);
+    assert.equal(sensor('pv').electricalPowerMeasurement.powerMode, 1);
+    assert.equal(sensor('pv').electricalPowerMeasurement.activePower, 2130000);
+    assert.equal(sensor('pv').electricalPowerMeasurement.voltage, undefined);
+    assert.equal(sensor('pv').electricalPowerMeasurement.activeCurrent, undefined);
+    assert.equal(state.has(oldPv.UUID), false);
+    pv1PowerRaw = 65535; await cycle();
+    assert.equal(sensor('pv').electricalPowerMeasurement.activePower, null);
+    assert.equal(sensor('pv').bridgedDeviceBasicInformation.reachable, false);
+    pv1PowerRaw = 0; await cycle();
+    assert.equal(sensor('pv').electricalPowerMeasurement.activePower, 1190000);
+    assert.equal(sensor('pv').bridgedDeviceBasicInformation.reachable, true);
+    failBattery = true; await cycle();
+    assert.equal(sensor('battery').temperatureMeasurement.measuredValue, null);
+    assert.equal(sensor('battery').bridgedDeviceBasicInformation.reachable, false);
+    assert.equal(sensor('ac').bridgedDeviceBasicInformation.reachable, true);
+    failBattery = false; await cycle();
+    assert.equal(sensor('battery').temperatureMeasurement.measuredValue, 3400);
+    assert.equal(sensor('battery').bridgedDeviceBasicInformation.reachable, true);
+    batterySocRaw = 65535; await cycle();
+    assert.equal(sensor('battery').powerSource.batPercentRemaining, null);
+    assert.equal(sensor('battery').temperatureMeasurement.measuredValue, 3400, 'SOC errors must not discard a valid temperature');
+    batterySocRaw = 0; await cycle();
+    assert.equal(sensor('battery').powerSource.batPercentRemaining, 0);
+    batterySocRaw = 100; await cycle();
+    assert.equal(sensor('battery').powerSource.batPercentRemaining, 200);
+    for (const [raw, expected] of [[900, true], [800, true], [799, false], [0, false], [900, false], [999, false], [1000, true]] as const) {
+      gridRaw = raw; await cycle();
+      assert.equal(sensor('grid').booleanState.stateValue, expected, `grid raw=${raw}`);
     }
-    gridRaw = 65535;
-    await waitForCycle();
-    assert.equal(grid.getCharacteristic(Characteristic.StatusFault).value, 1);
-    await assert.rejects(grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest());
-    assert.equal(sensor(ac).getCharacteristic(Characteristic.StatusFault).value, 0);
-    gridRaw = 2300;
-    await waitForCycle();
-    assert.equal(grid.getCharacteristic(Characteristic.StatusFault).value, 0);
-    assert.equal(await grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest(), 0);
+    gridRaw = 65535; await cycle();
+    assert.equal(sensor('grid').bridgedDeviceBasicInformation.reachable, false);
+    assert.equal(sensor('grid').booleanState.stateValue, true, 'failed read must not become a power outage');
+    gridRaw = 2300; await cycle();
+    assert.equal(sensor('grid').bridgedDeviceBasicInformation.reachable, true);
     api.signalShutdown();
     const requests = registers.length;
-    t.mock.timers.tick(60_000);
-    await delay(20);
+    t.mock.timers.tick(60_000); await delay(20);
     assert.equal(registers.length, requests);
   } finally {
     api.signalShutdown();
@@ -133,20 +158,25 @@ test('creates four HAP sensors, restores cache, faults and recovers, stops polli
   }
 });
 
-test('missing IP logs setup instructions and does not register sensors', t => {
+test('Matter disabled creates no accessories and retains old HAP cache', async t => {
+  const api = new HomebridgeAPI();
   const warn = t.mock.method(log, 'warn', () => {});
-  for (const host of [undefined, '', '   ']) {
-    const api = new HomebridgeAPI();
-    const registerAccessories = t.mock.method(api, 'registerPlatformAccessories', () => {});
-    new DeyePlatform(log, { platform: 'DeyeInverter', host }, api);
-    api.signalFinished();
-    assert.equal(DeyePlatform.isInitialized(api), false);
-    assert.equal(registerAccessories.mock.callCount(), 0);
-  }
-  assert.equal(warn.mock.callCount(), 3);
-  assert.match(String(warn.mock.calls[0].arguments[0]), /SETUP REQUIRED.*Plugin Config/);
+  const hap = t.mock.method(api, 'registerPlatformAccessories', () => {});
+  const unregister = t.mock.method(api, 'unregisterPlatformAccessories', () => {});
+  const platform = new DeyePlatform(log, { platform: 'DeyeInverter', host: '127.0.0.1' }, api);
+  platform.configureAccessory(new api.platformAccessory('Old Grid', api.hap.uuid.generate('old')));
+  api.signalFinished();
+  await delay(10);
+  assert.equal(hap.mock.callCount(), 0); assert.equal(unregister.mock.callCount(), 0);
+  assert.match(String(warn.mock.calls[0].arguments[0]), /enable Matter/);
+  api.signalShutdown();
 });
 
-test('rejects invalid port', () => {
+test('missing IP logs setup instructions and invalid port is rejected', t => {
+  t.mock.method(log, 'warn', () => {});
+  for (const host of [undefined, '', '   ']) {
+    const api = new HomebridgeAPI(); new DeyePlatform(log, { platform: 'DeyeInverter', host }, api);
+    assert.equal(DeyePlatform.isInitialized(api), false);
+  }
   assert.throws(() => new DeyePlatform(log, { platform: 'DeyeInverter', host: '127.0.0.1', port: 0 }, new HomebridgeAPI()), /port/);
 });

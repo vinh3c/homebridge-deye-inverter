@@ -2,7 +2,7 @@
   "pluginAlias": "DeyeInverter",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "## Quick setup\n1. Enable Modbus in your logger.\n2. Enter the logger IP address below.\n3. Click **Save**, then **Restart Homebridge**.\n\nSaving this form activates the plugin and creates three temperature sensors plus an Grid contact sensor (Closed = Grid On, Open = Grid Off). No manual config.json editing is needed. Temperature readings tested with Deye SUN-6K-SG05LP1-EU-SM2-P; grid detection requires verification on the inverter.",
+  "headerDisplay": "## Quick setup\nRequires Homebridge 2.2 or newer with Matter enabled on this bridge or its child bridge.\n1. Enable Modbus in your logger.\n2. Enter the logger IP address below.\n3. Click **Save**, then **Restart Homebridge**.\n\nThe plugin creates seven Matter accessories: DC Temperature, AC Temperature, Battery Temperature (including storage battery percentage), Grid (Closed = Grid On), Total Consumption Energy, Total Import Energy, and PV (total power only). All sensors use Matter inside Homebridge. Existing HAP sensors are removed after successful migration; automations using them may need to be recreated.",
   "footerDisplay": "**Finish setup:** click **Save**, then **Restart Homebridge**. Installing the plugin alone does not activate its sensors.",
   "schema": {
     "type": "object",

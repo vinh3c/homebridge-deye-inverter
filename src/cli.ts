@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { setTimeout as delay } from 'node:timers/promises';
-import { decodeTemperature, readHoldingRegisters } from './modbus.js';
+import { decodeBatteryPercent, decodeTemperature, readHoldingRegisters, readRegisterRanges } from './modbus.js';
+import { decodeTotalConsumptionEnergy, TOTAL_CONSUMPTION_REGISTER, TOTAL_IMPORT_LOW_REGISTER, TOTAL_IMPORT_HIGH_REGISTER } from './energy.js';
+import { PV_RANGES, readPvPower } from './pv.js';
 
 function integer(name: string, fallback: number, min: number, max: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -29,9 +31,13 @@ async function main() {
   const dcAddress = integer('DC_REGISTER', profile === 'single' ? 90 : 540, 0, 65535);
   const acAddress = integer('AC_REGISTER', profile === 'single' ? 91 : 541, 0, 65535);
   const batteryAddress = integer('BATTERY_REGISTER', profile === 'single' ? 182 : 586, 0, 65535);
+  const batterySocAddress = integer('BATTERY_SOC_REGISTER', profile === 'single' ? 184 : 588, 0, 65535);
   const gridAddress = profile === 'single' || process.env.GRID_REGISTER !== undefined
     ? integer('GRID_REGISTER', 150, 0, 65535) : undefined;
   const gridOnly = process.argv.includes('--grid-only');
+  const energyOnly = process.argv.includes('--energy-only');
+  if (gridOnly && energyOnly) throw new Error('Chỉ chọn --grid-only hoặc --energy-only');
+  if (energyOnly && profile !== 'single') throw new Error('--energy-only hiện chỉ hỗ trợ profile single');
   if (gridOnly && gridAddress === undefined) throw new Error('Cần đặt GRID_REGISTER khi dùng --grid-only với profile three');
   let gridPresent = false;
   const offsets = [integer('DC_OFFSET', 1000, 0, 3000), integer('AC_OFFSET', 1000, 0, 3000), integer('BATTERY_OFFSET', 1000, 0, 3000)];
@@ -45,26 +51,45 @@ async function main() {
     while (!controller.signal.aborted) {
       try {
         // Read sequentially: many loggers only support one outstanding request.
-        const raw: number[] = [];
-        const addresses = gridOnly ? [gridAddress!] : [dcAddress, acAddress, batteryAddress, ...(gridAddress === undefined ? [] : [gridAddress])];
-        for (const address of addresses) {
-          if (controller.signal.aborted) return;
-          const [value] = await readHoldingRegisters(options, address, 1);
-          raw.push(value);
-        }
-        const temperatures = gridOnly ? [] : raw.slice(0, 3).map((value, i) => decodeTemperature(value, offsets[i]));
-        const gridRaw = gridAddress === undefined ? undefined : raw[gridOnly ? 0 : 3];
+        const addresses = energyOnly ? [] : gridOnly ? [gridAddress!] : [dcAddress, acAddress, batteryAddress, ...(gridAddress === undefined ? [] : [gridAddress])];
+        const ranges = addresses.map(address => ({ address, count: 1 }));
+        if (!gridOnly && !energyOnly) ranges.push({ address: batterySocAddress, count: 1 });
+        const includeEnergy = !gridOnly && profile === 'single';
+        const includePv = !gridOnly && !energyOnly && profile === 'single';
+        if (includePv) ranges.push(...PV_RANGES);
+        if (includeEnergy) ranges.push({ address: TOTAL_IMPORT_LOW_REGISTER, count: 3 }, { address: TOTAL_CONSUMPTION_REGISTER, count: 2 });
+        const snapshot = await readRegisterRanges(options, ranges, () => controller.signal.aborted);
+        if (controller.signal.aborted) return;
+        const raw = addresses.map(address => snapshot.get(address)[0]);
+        const energyRaw = !gridOnly && profile === 'single'
+          ? snapshot.get(TOTAL_CONSUMPTION_REGISTER, 2) : undefined;
+        const totalConsumptionEnergy = energyRaw === undefined ? undefined : decodeTotalConsumptionEnergy(energyRaw[0], energyRaw[1]) / 1_000_000;
+        // Register 79 is frequency, not the high word of imported energy.
+        const importRaw = includeEnergy ? [snapshot.get(TOTAL_IMPORT_LOW_REGISTER)[0], snapshot.get(TOTAL_IMPORT_HIGH_REGISTER)[0]] : undefined;
+        const totalImportEnergy = importRaw === undefined ? undefined : decodeTotalConsumptionEnergy(importRaw[0], importRaw[1]) / 1_000_000;
+        const temperatures = gridOnly || energyOnly ? [] : raw.slice(0, 3).map((value, i) => decodeTemperature(value, offsets[i]));
+        const batterySocRaw = gridOnly || energyOnly ? undefined : snapshot.get(batterySocAddress)[0];
+        const batteryPercent = batterySocRaw === undefined ? undefined : decodeBatteryPercent(batterySocRaw);
+        const pv = includePv ? readPvPower(snapshot) : undefined;
+        const pvFields = pv ? { pvTotalPowerW: pv.powerW } : {};
+        const gridRaw = energyOnly || gridAddress === undefined ? undefined : raw[gridOnly ? 0 : 3];
         if (gridRaw === 0xffff) throw new Error('Grid voltage unavailable (raw=65535); trạng thái Grid không xác định');
         const gridVoltageV = gridRaw === undefined ? undefined : gridRaw / 10;
         if (gridVoltageV !== undefined) gridPresent = gridVoltageV >= (gridPresent ? 80 : 100);
         console.log(JSON.stringify({
           time: new Date().toISOString(),
+          modbusRequests: snapshot.requests,
           dcC: temperatures[0], acC: temperatures[1], batteryC: temperatures[2],
+          batteryPercent,
+          ...pvFields,
           gridVoltageV,
+          totalConsumptionEnergy,
+          totalImportEnergy,
+          energyUnit: totalConsumptionEnergy === undefined ? undefined : 'kWh',
           grid: gridVoltageV === undefined ? undefined : gridPresent ? 'On' : 'Off',
           contact: gridVoltageV === undefined ? undefined : gridPresent ? 'Closed' : 'Open',
-          raw: gridOnly ? { grid: gridRaw } : { dc: raw[0], ac: raw[1], battery: raw[2], grid: gridRaw },
-          registers: gridOnly ? { grid: gridAddress } : { dc: dcAddress, ac: acAddress, battery: batteryAddress, grid: gridAddress },
+          raw: energyOnly ? { totalConsumptionEnergy: energyRaw, totalImportEnergy: importRaw } : gridOnly ? { grid: gridRaw } : { dc: raw[0], ac: raw[1], battery: raw[2], batteryPercent: batterySocRaw, grid: gridRaw, totalConsumptionEnergy: energyRaw, totalImportEnergy: importRaw, ...(pv ? { pvTotalPowerW: pv.raw } : {}) },
+          registers: energyOnly ? { totalConsumptionEnergy: [85, 86], totalImportEnergy: [78, 80] } : gridOnly ? { grid: gridAddress } : { dc: dcAddress, ac: acAddress, battery: batteryAddress, batteryPercent: batterySocAddress, grid: gridAddress, ...(energyRaw ? { totalConsumptionEnergy: [85, 86], totalImportEnergy: [78, 80] } : {}), ...(pv ? { pvTotalPowerW: [186, 187] } : {}) },
         }));
       } catch (error) {
         if (once) throw error;

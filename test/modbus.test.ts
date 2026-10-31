@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, type Socket } from 'node:net';
 import { test } from 'node:test';
-import { decodeTemperature, readHoldingRegisters } from '../src/modbus.js';
+import { decodeBatteryPercent, decodeTemperature, readHoldingRegisters, groupRegisterRanges, readRegisterRanges } from '../src/modbus.js';
 
 async function withLogger(respond: (socket: Socket, request: Buffer) => void, check: (port: number) => Promise<void>) {
   const sockets = new Set<Socket>();
@@ -74,4 +74,47 @@ test('decodes offset temperatures including negatives and missing values', () =>
   assert.equal(decodeTemperature(1250), 25);
   assert.equal(decodeTemperature(250, 0), 25);
   assert.equal(decodeTemperature(65535), null);
+});
+
+test('battery SOC accepts 0–100 percent and rejects unavailable or invalid words', () => {
+  for (const value of [0, 1, 83, 100]) assert.equal(decodeBatteryPercent(value), value);
+  for (const value of [-1, 101, 65535, NaN, 50.5]) assert.equal(decodeBatteryPercent(value), null);
+});
+
+test('groups nearby words without crossing large gaps or splitting energy values', () => {
+  assert.deepEqual(groupRegisterRanges([
+    { address: 182, count: 1 }, { address: 90, count: 1 }, { address: 91, count: 1 },
+    { address: 150, count: 1 }, { address: 85, count: 2 },
+  ]), [{ address: 85, count: 7 }, { address: 150, count: 1 }, { address: 182, count: 1 }]);
+  assert.deepEqual(groupRegisterRanges([{ address: 90, count: 1 }, { address: 91, count: 1 }]), [{ address: 90, count: 2 }]);
+  assert.deepEqual(groupRegisterRanges([{ address: 85, count: 2 }]), [{ address: 85, count: 2 }]);
+  assert.deepEqual(groupRegisterRanges([{ address: 78, count: 3 }, { address: 85, count: 2 }, { address: 90, count: 2 }]), [{ address: 78, count: 14 }]);
+  assert.deepEqual(groupRegisterRanges([{ address: 78, count: 3 }, { address: 85, count: 2 }]), [{ address: 78, count: 9 }]);
+  assert.throws(() => groupRegisterRanges([{ address: 65535, count: 2 }]));
+});
+
+test('batch maps words by address and continues independent blocks after a Modbus error', async () => {
+  const requests: [number, number][] = [];
+  await withLogger((socket, request) => {
+    const address = request.readUInt16BE(8);
+    const count = request.readUInt16BE(10);
+    requests.push([address, count]);
+    const reply = address === 150 ? Buffer.from([0, 0, 0, 0, 0, 3, 1, 0x83, 2]) : Buffer.alloc(9 + count * 2);
+    request.copy(reply, 0, 0, 2);
+    if (address !== 150) {
+      reply.writeUInt16BE(3 + count * 2, 4); reply[6] = 1; reply[7] = 3; reply[8] = count * 2;
+      for (let i = 0; i < count; i++) reply.writeUInt16BE(address + i, 9 + i * 2);
+    }
+    socket.end(reply);
+  }, async port => {
+    const snapshot = await readRegisterRanges(options(port), [
+      { address: 85, count: 2 }, { address: 90, count: 2 }, { address: 150, count: 1 }, { address: 182, count: 1 },
+    ]);
+    assert.deepEqual(snapshot.get(85, 2), [85, 86]);
+    assert.deepEqual(snapshot.get(90, 2), [90, 91]);
+    assert.throws(() => snapshot.get(150), /exception/);
+    assert.deepEqual(snapshot.get(182), [182]);
+    assert.throws(() => snapshot.get(200), /was not read/);
+    assert.deepEqual(requests, [[85, 7], [150, 1], [182, 1]]);
+  });
 });

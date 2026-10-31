@@ -1,0 +1,69 @@
+# Working agreements
+
+## Maintaining these instructions
+
+- Keep this file in English.
+- When the user clarifies requirements, corrects the approach, or states a lasting project preference, update `AGENTS.md` in the same turn to avoid repeating mistakes.
+- Read these instructions before subsequent work. When a new instruction replaces an old one, revise the existing rule instead of leaving contradictory guidance.
+- Record concise decisions and constraints useful for future work. Do not store secrets, temporary process IDs, or the entire conversation history.
+
+## Engineering judgment and proactive refactoring
+
+- The user provides objectives; technical suggestions in their questions are not instructions to follow mechanically. Evaluate performance, transferred data, reliability, and complexity, then choose a balanced solution and briefly explain the tradeoffs. Do not turn "why not read everything at once?" into a permanent requirement for exactly one request. If a suggestion is less suitable, explain why and implement a reasonable approach within the authorized scope.
+- Proactively refactor source when needed for clarity, maintainability, reduced duplication, or correct implementation of the current feature. Refactoring alone does not require asking again.
+- Match the scope to the actual problem. Preserve agreed behavior and conventions unless the current requirement calls for a change. Refactoring does not authorize deployment, device pairing, or inverter configuration changes.
+- Run typechecking and appropriate tests for affected behavior. Briefly explain what was refactored and why.
+
+## Testing against the physical inverter
+
+- For live testing or checking actual measurements, use the Modbus CLI and logs by default. The purpose is to compare values with the inverter.
+- Do not start a test Homebridge instance, Matter bridge, device advertisement, or Apple Home pairing workflow unless explicitly requested. Implementing Matter support does not imply permission to test pairing.
+- Prefer one-shot runs, such as `npm start -- --energy-only --once` for an energy check or `npm start -- --once` for a full reading.
+- For continuous observation, prefer a foreground CLI that the user can stop with `Ctrl+C`. Avoid background processes that require finding a PID or running `Stop-Process`.
+- Run in the background only when explicitly requested. Provide a simple way to stop it and the log location.
+- Store local logs under `.local/`. Use `.local/deye.log` for all measurements; use `.local/energy.log` only for energy-only runs. Do not commit live logs.
+- If the user requests CLI logs without restricting the measurements, include Grid/contact/voltage, all three temperatures, battery percentage, both energy counters, and total PV power. Use `--energy-only` or `--grid-only` only when that restriction is requested. After updating a process, check that new log entries contain all expected fields. If a file was recreated or truncated, tell the user to reopen their tail session.
+- Report measured values, register addresses, and raw words. Distinguish successful Modbus reads, successful Matter updates, and verified Apple Home presentation. Only claim what was actually checked.
+- Live tests must only read inverter data. Do not write registers or change inverter settings unless requested.
+- Group nearby supported registers into FC03 requests instead of reading each metric separately. Requests remain sequential and never overlap. Register batching is different from sending concurrent requests; verify supported ranges and error handling before changing polling.
+- Current polling decision: read three groups, `78-91`, `150`, and `182-187` (21 words), when energy is needed. Other plugin cycles read `90-91`, `150`, and `182-187` (9 words). Keep multiword values within one request. `--energy-only` reads `78-86`; `--grid-only` reads `150`.
+- A small live comparison, three trials per approach, measured median cycle times of about 307 ms for three groups and 310 ms for one `78-187` request (110 words). These are observations from a small sample, not performance guarantees. Prefer nearby groups because measured latency was similar, less unused data is transferred, and a failed group does not invalidate every measurement. The fewest requests are not automatically the best overall solution. Respect the FC03 maximum of 125 registers.
+
+## Homebridge experience and protocol selection
+
+- The confirmed goal is to install/configure the plugin in Homebridge so its sensors/devices appear and work in **Apple Home**. Display in the Homebridge UI Accessories screen is not required.
+- Android and other ecosystems are not required. Do not select Matter merely for cross-platform support. Matter versus HAP is an implementation decision serving Apple Home, not an objective itself.
+- Prefer Matter for devices/measurements that Matter supports and Apple Home can display. Use HomeKit HAP only for specific functionality that Matter cannot adequately provide in Apple Home.
+- Expose each device through one protocol to avoid duplicates. Do not assume Apple Home will merge the same device exposed through both Matter and HAP, or combine their attributes into one accessory.
+- The plugin is responsible for this selection; Homebridge does not automatically convert HAP accessories to Matter. Distinguish custom energy characteristics readable in the Eve app from native presentation in Apple Home.
+- Verify actual Apple Home presentation separately: successful API registration does not prove correct UI display. Do not pair Apple Home for testing when only CLI data verification was requested.
+- Do not change protocols solely because features overlap if doing so loses functionality or adds configuration/pairing steps without addressing the user experience. Explain necessary configuration through Homebridge UI steps and mention protocol details only when useful.
+- The current Deye implementation uses seven Matter accessories: DC/AC/battery temperature, Grid, Total Consumption Energy, Total Import Energy, and PV total power. The energy counters have separate UUIDs, must not overwrite each other, and must not be added together. Actual Apple Home presentation is unverified; Matter tests alone do not establish that the user experience is complete.
+- Matter runs inside Homebridge. Do not create a separate Matter application/bridge to deploy this plugin.
+- Automated tests may use a simulated logger to exercise Matter APIs. This is separate from physical-inverter CLI checks. Do not automatically add devices to Apple Home during testing.
+
+## Energy measurements and naming
+
+- Implemented business names: `totalConsumptionEnergy` means total load consumption; `totalImportEnergy` means total energy imported from the grid. Both use kWh in CLI/log output, without a KWh suffix. CLI JSON declares the unit through `energyUnit`. Do not label grid imports as total consumption.
+- Total load consumption includes energy supplied by grid, solar, and storage battery; it is not limited to electricity purchased from EVN.
+- For the installed single-phase SUN-6K-SG05LP1-EU-SM2-P, read total load consumption from registers `85` (low word) and `86` (high word) in the same FC03 request.
+- `totalConsumptionEnergy = (high * 65536 + low) / 10`.
+- Distinguish Total Load (`85-86`) from Grid Buy (`78` low word and `80` high word on this single-phase map). Do not substitute Grid Buy for actual load consumption.
+- For `totalImportEnergy`, read `78-80` together and ignore `79`, which is grid frequency. Calculate `(register80 * 65536 + register78) / 10` kWh. CLI output includes both counters. When adding a requested metric, implement its reading rather than only documenting its name.
+- The internal Matter adapter maps total consumption to `electricalEnergyMeasurement.cumulativeEnergyImported` on the accessory named Total Consumption Energy, with `energy` in mWh. This is a protocol field name, not a Deye register name or a claim that the reading is grid purchases. User-facing output calls it total load consumption (`totalConsumptionEnergy`) and states the measurement scope.
+- Do not put `cumulativeEnergyImported` in measurement logs, CLI JSON, or user-facing metric descriptions because it is easily confused with grid imports. Keep this standard name inside the Matter adapter and protocol tests; do not rename standard wire attributes. Do not print internal Matter payloads in CLI output.
+- Do not claim Apple Home will store history or draw energy charts without verification.
+
+## Storage battery percentage
+
+- `batteryPercent` is the inverter-reported current SOC of the storage battery: register `184` on this single-phase model, in 1% units, valid from 0 through 100. Do not describe it as a sensor's backup battery.
+- Read `182-184` together with battery temperature. Invalid percentage readings become `null`, not 0%, and must not discard a valid temperature.
+- Attach SOC to the existing Battery Temperature accessory using Matter PowerSource (`batPercentRemaining = batteryPercent * 2`), without creating a separate SOC accessory. This does not establish that Apple Home has a standalone storage-battery tile or updates it instantly; only claim verified CLI/Matter behavior.
+- When upgrading an older Battery Temperature accessory without PowerSource, rebuild its endpoint with the same UUID to add the cluster. Full CLI output includes SOC; `--energy-only` includes only the two energy counters.
+
+## Instantaneous PV power
+
+- The user selected **total PV power only (W)**. Do not expose separate PV1/PV2 measurements or PV voltage/current. CLI/log output uses only `pvTotalPowerW`.
+- `pvTotalPowerW = register186 + register187`, read in one block. The individual source words are internal inputs to the total. Do not calculate power from voltage times current, or read PV voltage/current registers. Distinguish power (W) from energy (kWh).
+- Zero is valid. An unavailable `0xffff` word or read failure produces `null`; if either source is unavailable, the total is `null` rather than a partial sum. Matter uses one ElectricalSensor accessory named PV, in DC mode, with power in mW internally. Remove legacy PV1/PV2 accessories after the total PV endpoint is ready. Do not claim correct Apple Home presentation without verification.
+- Preserve the current log file when updating a running CLI by appending, so an existing tail session keeps following new data.
