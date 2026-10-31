@@ -124,22 +124,14 @@ export class DeyePlatform implements DynamicPlatformPlugin {
           });
         });
       }
-      // Homebridge's cache keeps device type names/codes, not our initializer.
-      // Rebuild Battery Temperature with the same UUID on every restore so its
-      // PowerSource is scoped to its actual assigned endpoint before going ready.
-      const rebuildBattery = sensor.key === 'battery' && cached;
-      if (rebuildBattery) {
-        await matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [cached]);
-        const deadline = Date.now() + 5000;
-        while (await matter.getAccessoryState(accessory.UUID, 'temperatureMeasurement') !== undefined) {
-          if (Date.now() >= deadline) throw new Error('Battery endpoint rebuild did not finish within 5 seconds');
-          await delay(50);
-        }
-      }
-      if (!cached || rebuildBattery) await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      // Reattach every cached accessory's plugin/platform ownership. The battery's
+      // explicit topology also makes Homebridge await its rebuild internally;
+      // separate fire-and-forget remove/add calls can race during endpoint close.
+      await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       const cluster = sensor.kind === 'contact' ? 'booleanState' : 'temperatureMeasurement';
       const deadline = Date.now() + 5000;
-      while (!this.stopped && await matter.getAccessoryState(accessory.UUID, cluster) === undefined) {
+      while (!this.stopped && ((sensor.key === 'battery' && batteryEndpointNumber === undefined)
+        || await matter.getAccessoryState(accessory.UUID, cluster) === undefined)) {
         if (Date.now() >= deadline) throw new Error(`${sensor.name}: Matter endpoint did not become ready within 5 seconds`);
         await delay(50);
       }

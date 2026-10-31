@@ -27,9 +27,8 @@ function createMatterHarness() {
     },
     registerPlatformAccessories: async (_plugin: string, _platform: string, accessories: MatterAccessory[]) => {
       for (const accessory of accessories) {
-        assert(!states.has(accessory.UUID), 'an existing endpoint must not be registered twice');
         registrations.push(accessory);
-        states.set(accessory.UUID, structuredClone(accessory.clusters) as Record<string, ClusterState>);
+        if (!states.has(accessory.UUID)) states.set(accessory.UUID, structuredClone(accessory.clusters) as Record<string, ClusterState>);
       }
     },
     updateAccessoryState: async (uuid: string, cluster: string, attributes: ClusterState) => {
@@ -84,7 +83,7 @@ test('Matter meter reads both words together, throttles, clears failures, recove
   const address = server.address();
   assert(address && typeof address === 'object');
   const options = { host: '127.0.0.1', port: address.port, unitId: 1, timeoutMs: 1000 };
-  const { api, log, registrations, reading } = createMatterHarness();
+  const { api, log, registrations, states, reading } = createMatterHarness();
   const uuid = 'plugin:totalConsumptionEnergy';
   try {
     const meter = new TotalConsumptionEnergy(log, api);
@@ -110,7 +109,9 @@ test('Matter meter reads both words together, throttles, clears failures, recove
     const restored = new TotalConsumptionEnergy(log, api);
     restored.configureAccessory(registrations[0]);
     await restored.setup('plugin', 'platform');
-    assert.equal(registrations.length, 1, 'cached meter must not register again');
+    assert.equal(registrations.length, 2, 'cached meter must reattach ownership');
+    assert.equal(registrations[1].UUID, registrations[0].UUID);
+    assert.equal(states.size, 1, 'reattaching a cached meter must reuse its endpoint');
     assert.equal(reading(uuid), null);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

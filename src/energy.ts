@@ -47,7 +47,9 @@ class CumulativeEnergy {
       context: { sensorKey: this.definition.key },
       clusters: { electricalEnergyMeasurement: { cumulativeEnergyImported: null } },
     };
-    if (!this.cached) await matter.registerPlatformAccessories(plugin, platform, [accessory]);
+    // Reattach ownership on cache restore so the next persisted cache still
+    // identifies this plugin/platform and does not become orphaned on restart.
+    await matter.registerPlatformAccessories(plugin, platform, [accessory]);
     // Homebridge dispatches registration through an event; its Promise can resolve
     // before the Matter endpoint exists. Wait before sending the initial state.
     const deadline = Date.now() + 5000;

@@ -130,7 +130,8 @@ test('creates only Matter sensors, migrates HAP cache, preserves values and hyst
     await until(() => sensor('totalConsumptionEnergy')?.electricalEnergyMeasurement.cumulativeEnergyImported?.energy === 567700000);
     await until(() => sensor('totalImportEnergy')?.electricalEnergyMeasurement.cumulativeEnergyImported?.energy === 123400000);
     await delay(20);
-    assert.equal(added.length, 6, 'DC Matter cache must be reused');
+    assert.equal(added.length, 7, 'all cached and new accessories must register current ownership');
+    assert.equal(added.find(accessory => accessory.context.sensorKey === 'dc')!.UUID, dcUuid);
     assert.equal(hapRegistration.mock.callCount(), 0);
     assert.deepEqual(unregister.mock.calls[0].arguments[2], [legacy]);
     assert.equal(sensor('dc').temperatureMeasurement.measuredValue, 6240);
@@ -141,7 +142,8 @@ test('creates only Matter sensors, migrates HAP cache, preserves values and hyst
     for (const key of ['dc', 'ac', 'grid', 'pv', 'totalConsumptionEnergy', 'totalImportEnergy']) {
       assert.equal(sensor(key).powerSource, undefined, `${key} must not carry a storage-battery source`);
     }
-    assert.deepEqual(upgraded, [batteryUuid, oldPv.UUID], 'old battery is upgraded and separate PV input is removed');
+    assert.deepEqual(upgraded, [oldPv.UUID], 'battery rebuild is delegated to Homebridge; separate PV input is removed');
+    assert.equal(added.find(accessory => accessory.context.sensorKey === 'battery')!.UUID, batteryUuid);
     assert.equal(sensor('grid').booleanState.stateValue, true);
     assert.deepEqual(registers.slice(0, 3), [78, 150, 182]);
     assert.equal(sensor('pv').electricalPowerMeasurement.powerMode, 1);
@@ -225,7 +227,7 @@ for (const previousScope of [[], [12]] as number[][]) {
     (platform as any).matter = matter;
     try {
       await (platform as any).setupAccessories();
-      assert.deepEqual(removed, [batteryUuid]);
+      assert.deepEqual(removed, [], 'registering explicit topology lets Homebridge rebuild atomically');
       const replacement = added.find(accessory => accessory.context.sensorKey === 'battery');
       assert.equal(replacement?.UUID, batteryUuid, 'migration preserves the accessory identity');
       assert.deepEqual(replacement?.clusters?.powerSource?.endpointList, [83], 'the scope initializer updates the cache declaration too');

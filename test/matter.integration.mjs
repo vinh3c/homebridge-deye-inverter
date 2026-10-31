@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-test('all seven accessories use real Matter endpoints and restore after restart without HAP sensors', { timeout: 45000 }, async () => {
+test('all seven accessories use real Matter endpoints and keep battery scope through legacy-cache migration and restart', { timeout: 60000 }, async () => {
   const storage = await mkdtemp(join(tmpdir(), 'deye-matter-'));
   let batterySoc = 83;
   const logger = createServer(socket => {
@@ -38,9 +38,10 @@ test('all seven accessories use real Matter endpoints and restore after restart 
     platforms: [{ platform: 'DeyeInverter', host: '127.0.0.1', port: logger.address().port }], accessories: [],
   }));
   let child;
+  let originalBatteryIdentity;
   try {
-    for (const run of ['Added', 'Restored']) {
-      batterySoc = run === 'Added' ? 83 : 27;
+    for (const [index, run] of ['Added', 'Restored', 'Restored'].entries()) {
+      batterySoc = [83, 27, 54][index];
       let output = '';
       child = spawn(process.execPath, ['--import', pathToFileURL(resolve('test/matter-network.mjs')).href, resolve('node_modules/homebridge/bin/homebridge.js'), '-D', '-U', storage, '-P', resolve('.'), '--strict-plugin-resolution'], { stdio: ['ignore', 'pipe', 'pipe'] });
       for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { output += chunk; });
@@ -52,10 +53,17 @@ test('all seven accessories use real Matter endpoints and restore after restart 
       assert(output.includes('Total Import Energy: 6558.6 kWh'), output);
       assert(output.includes('energyImported: { energy: 6563600000'), output);
       assert(!output.includes('Failed to update'), output);
+      assert(!output.includes('Failed to register Matter accessory'), output);
+      assert(!output.includes('Matter sensor setup failed'), output);
+      assert(!output.includes('Removing orphaned Matter accessory'), output);
       // Wait for Homebridge's debounced cache write, then verify its actual state.
       await delay(2200);
       const cache = JSON.parse(await readFile(join(storage, 'matter', '0EDE01020306', 'accessories.json'), 'utf8'));
       assert.equal(cache.length, 7);
+      for (const accessory of cache) {
+        assert.equal(accessory.plugin, 'homebridge-deye-inverter', `${accessory.displayName} must retain plugin ownership after restore`);
+        assert.equal(accessory.platform, 'DeyeInverter', `${accessory.displayName} must retain platform ownership after restore`);
+      }
       const byKey = Object.fromEntries(cache.map(accessory => [accessory.context.sensorKey, accessory]));
       assert.equal(byKey.dc.deviceType.name, 'TemperatureSensor');
       assert.equal(byKey.dc.clusters.temperatureMeasurement.measuredValue, 5000);
@@ -63,6 +71,20 @@ test('all seven accessories use real Matter endpoints and restore after restart 
       assert.equal(byKey.battery.clusters.temperatureMeasurement.measuredValue, 3000);
       assert.equal(byKey.battery.clusters.powerSource.batPercentRemaining, batterySoc * 2);
       assert.equal(byKey.battery.clusters.powerSource.description, 'Deye storage battery');
+      // The assigned number comes from the real endpoint Ready log, independently
+      // of the plugin's scope initializer and persisted accessory declaration.
+      const ready = [...output.matchAll(new RegExp(`${byKey.battery.uuid} ready endpoint#:\\s*(\\d+)`, 'g'))];
+      assert(ready.length > 0, output);
+      const batteryEndpoint = Number(ready.at(-1)[1]);
+      assert(batteryEndpoint > 1);
+      assert(output.includes(`Battery SOC scope: Battery Temperature only (endpoint=${batteryEndpoint})`), output);
+      assert.deepEqual(byKey.battery.clusters.powerSource.endpointList, [batteryEndpoint], 'the persisted source must cover only its real endpoint');
+      const identity = { uuid: byKey.battery.uuid, endpoint: batteryEndpoint };
+      if (originalBatteryIdentity) assert.deepEqual(identity, originalBatteryIdentity, 'migration/restart must preserve battery identity and assigned endpoint');
+      else originalBatteryIdentity = identity;
+      for (const key of ['dc', 'ac', 'grid', 'pv', 'totalConsumptionEnergy', 'totalImportEnergy']) {
+        assert.equal(byKey[key].clusters.powerSource, undefined, `${key} must not carry the storage battery source`);
+      }
       for (const key of ['pv']) {
         assert.equal(byKey[key].deviceType.name, 'ElectricalSensor');
         assert.equal(byKey[key].clusters.electricalPowerMeasurement.powerMode, 1);
@@ -88,6 +110,13 @@ test('all seven accessories use real Matter endpoints and restore after restart 
       child.kill('SIGTERM');
       await new Promise(resolve => child.once('exit', resolve));
       child = undefined;
+      if (index === 0) {
+        // Reproduce an installed older plugin's node-wide source and stale SOC.
+        // Change the cache only after shutdown so Homebridge cannot overwrite it.
+        byKey.battery.clusters.powerSource.endpointList = [];
+        byKey.battery.clusters.powerSource.batPercentRemaining = 198;
+        await writeFile(join(storage, 'matter', '0EDE01020306', 'accessories.json'), JSON.stringify(cache));
+      }
     }
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {

@@ -47,7 +47,8 @@ export class PvSensors {
         bridgedDeviceBasicInformation: { reachable: false },
       },
     };
-    if (!cached) await matter.registerPlatformAccessories(plugin, platform, [accessory]);
+    // Cached endpoints must reattach their plugin/platform ownership each start.
+    await matter.registerPlatformAccessories(plugin, platform, [accessory]);
     const deadline = Date.now() + 5000;
     while (!stopped() && await matter.getAccessoryState(accessory.UUID, 'electricalPowerMeasurement') === undefined) {
       if (Date.now() >= deadline) throw new Error('PV: Matter endpoint did not become ready within 5 seconds');

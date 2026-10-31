@@ -4,6 +4,7 @@ import type { MatterAccessory, MatterAPI } from 'homebridge';
 export function createBatteryTemperatureType(matter: MatterAPI, onScope?: (endpoint: number) => void): MatterAccessory['deviceType'] {
   const temperature = matter.deviceTypes.TemperatureSensor;
   const Base = temperature.behaviors.temperatureMeasurement;
+  const PowerSource = matter.deviceTypes.BridgedNode.requirements.PowerSourceServer;
 
   class ScopedBatteryTemperature extends Base {
     override async initialize(): Promise<void> {
@@ -27,7 +28,10 @@ export function createBatteryTemperatureType(matter: MatterAPI, onScope?: (endpo
     }
   }
 
-  return temperature.with(ScopedBatteryTemperature);
+  // Declare the full topology up front. Homebridge restores the base type from
+  // cache; the explicit PowerSource key makes it rebuild that endpoint through
+  // its own awaited unregister/register sequence instead of attaching in place.
+  return temperature.with(ScopedBatteryTemperature, PowerSource.with('Battery', 'Rechargeable'));
 }
 
 export function readBatteryEndpointList(state: Record<string, unknown> | undefined, expectedEndpoint?: number): number[] {
