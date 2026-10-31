@@ -2,14 +2,28 @@
   "pluginAlias": "DeyeInverter",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "## Quick setup\nRequires Homebridge 2.2 or newer with Matter enabled on this bridge or its child bridge.\n1. Enable Modbus in your logger.\n2. Enter the logger IP address below.\n3. Click **Save**, then **Restart Homebridge**.\n\nThe plugin creates seven Matter accessories: DC Temperature, AC Temperature, Battery Temperature (including storage battery percentage), Grid (Closed = Grid On), Total Consumption Energy, Total Import Energy, and PV (total power only). All sensors use Matter inside Homebridge. Existing HAP sensors are removed after successful migration; automations using them may need to be recreated.",
+  "headerDisplay": "## Quick setup\nRequires Homebridge 2.2 or newer with Matter enabled on this bridge or its child bridge.\n1. Enable Modbus in your logger.\n2. Enter the logger IP address below.\n3. Click **Save**, then **Restart Homebridge**.\n\nThe plugin creates eight Matter accessories: DC Temperature, AC Temperature, Battery Temperature (including storage battery percentage), PV1, PV2, Grid Power, Load Power, and Battery Power (each with W, A, V). All sensors use Matter inside Homebridge. Existing HAP sensors are removed after successful migration; automations using them may need to be recreated.",
   "footerDisplay": "**Finish setup:** click **Save**, then **Restart Homebridge**. Installing the plugin alone does not activate its sensors.",
   "schema": {
     "type": "object",
-    "required": ["host"],
+    "required": [
+      "host"
+    ],
     "properties": {
-      "host": { "title": "Logger IP address", "type": "string", "placeholder": "e.g. 192.168.5.190", "minLength": 1, "description": "Required. Enter your logger IP address, then click Save and restart Homebridge." },
-      "port": { "title": "Modbus TCP port", "type": "integer", "default": 502, "minimum": 1, "maximum": 65535 }
+      "host": {
+        "title": "Logger IP address",
+        "type": "string",
+        "placeholder": "e.g. 192.168.5.190",
+        "minLength": 1,
+        "description": "Required. Enter your logger IP address, then click Save and restart Homebridge."
+      },
+      "port": {
+        "title": "Modbus TCP port",
+        "type": "integer",
+        "default": 502,
+        "minimum": 1,
+        "maximum": 65535
+      }
     }
   },
   "layout": [
@@ -19,7 +33,9 @@
       "title": "Advanced settings",
       "expandable": true,
       "expanded": false,
-      "items": ["port"]
+      "items": [
+        "port"
+      ]
     }
   ]
 }

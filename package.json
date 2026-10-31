@@ -2,7 +2,7 @@
   "name": "homebridge-deye-inverter",
   "displayName": "Deye Inverter",
   "version": "1.0.3",
-  "description": "Deye inverter temperature, grid, storage battery, energy and PV measurements via Homebridge Matter",
+  "description": "Deye inverter temperatures, grid, storage battery and electrical power/current/voltage via Homebridge Matter",
   "main": "dist/index.js",
   "keywords": [
     "homebridge-plugin",
