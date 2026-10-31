@@ -29,6 +29,16 @@ test('registers dynamic platform without starting CLI', () => {
   assert(registered);
 });
 
+test('logs plugin loading and detects a missing platform configuration', t => {
+  const info = t.mock.method(console, 'info', () => {});
+  const warn = t.mock.method(console, 'warn', () => {});
+  const api = new HomebridgeAPI();
+  register(api);
+  assert.match(String(info.mock.calls[0].arguments[0]), /Plugin loaded/);
+  api.signalFinished();
+  assert.match(String(warn.mock.calls[0].arguments[0]), /DeyeInverter was not initialized/);
+});
+
 test('creates three HAP sensors, restores cache, faults and recovers, stops polling', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let failBattery = false;
@@ -56,6 +66,7 @@ test('creates three HAP sensors, restores cache, faults and recovers, stops poll
   api.on('registerPlatformAccessories', accessories => added.push(...accessories));
   api.on('updatePlatformAccessories', accessories => updated.push(...accessories));
   const cached = new api.platformAccessory('Old DC', api.hap.uuid.generate('homebridge-deye-inverter:deye-sg05lp1:dc'));
+  cached.addService(api.hap.Service.TemperatureSensor, 'DC Temperature');
   const platform = new DeyePlatform(log, { platform: 'DeyeInverter', host: '127.0.0.1', port: address.port }, api);
   platform.configureAccessory(cached);
   const { Service, Characteristic } = api.hap;
@@ -64,6 +75,7 @@ test('creates three HAP sensors, restores cache, faults and recovers, stops poll
     api.signalFinished();
     assert.equal(added.length, 2);
     assert.deepEqual(updated, [cached]);
+    assert.equal(cached.getService(Service.AccessoryInformation)!.getCharacteristic(Characteristic.Model).value, 'Modbus TCP Inverter');
     const ac = added.find(a => a.displayName === 'AC Temperature')!;
     const battery = added.find(a => a.displayName === 'Battery Temperature')!;
     await until(() => sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).value === 34);

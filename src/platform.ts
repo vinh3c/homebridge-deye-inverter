@@ -11,16 +11,22 @@ const sensors = [
 ] as const;
 
 export class DeyePlatform implements DynamicPlatformPlugin {
+  private static readonly initialized = new WeakSet<API>();
+
+  static isInitialized(api: API): boolean {
+    return DeyePlatform.initialized.has(api);
+  }
+
   private readonly cached = new Map<string, PlatformAccessory>();
   private readonly services = new Map<string, Service>();
   private readonly values = new Map<string, number>();
   private readonly options: ConnectionOptions;
   private readonly intervalMs = 10_000;
-  private readonly identity = 'deye-sg05lp1';
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
 
   constructor(private readonly log: Logging, config: PlatformConfig, private readonly api: API) {
+    this.log.info('Starting DeyeInverter platform');
     const integer = (key: string, fallback: number, min: number, max: number) => {
       const value = config[key] ?? fallback;
       if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
@@ -28,40 +34,50 @@ export class DeyePlatform implements DynamicPlatformPlugin {
       }
       return value;
     };
+    DeyePlatform.initialized.add(api);
     const host = config.host ?? '192.168.5.60';
     if (typeof host !== 'string' || !host.trim()) throw new Error('host must be a non-empty hostname or IP');
     this.options = {
       host: host.trim(), port: integer('port', 502, 1, 65535),
       unitId: 1, timeoutMs: 5000,
     };
+    this.log.info(`Connecting to Modbus TCP logger at ${this.options.host}:${this.options.port}`);
     // One inverter per platform; fixed identity survives IP and display name changes.
     api.on('didFinishLaunching', () => {
+      this.log.info(`Homebridge finished launching; setting up sensors (${this.cached.size} cached accessories)`);
       this.setupAccessories();
+      this.log.info('Ready: DC Temperature, AC Temperature, Battery Temperature');
       void this.poll();
     });
     api.on('shutdown', () => {
+      this.log.info('Stopping temperature polling');
       this.stopped = true;
       clearTimeout(this.timer);
     });
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
+    this.log.info(`Loaded cached accessory: ${accessory.displayName}`);
     this.cached.set(accessory.UUID, accessory);
   }
 
   private setupAccessories(): void {
     const { Service, Characteristic } = this.api.hap;
     for (const sensor of sensors) {
-      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.identity}:${sensor.key}`);
+      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${sensor.key}`);
       const name = sensor.name;
-      let accessory = this.cached.get(uuid);
+      // Reuse existing sensors, including accessories created before generic IDs.
+      let accessory = this.cached.get(uuid) ?? [...this.cached.values()].find(item =>
+        item.context.sensorKey === sensor.key ||
+        item.getService(Service.TemperatureSensor)?.getCharacteristic(Characteristic.Name).value === name);
       const isNew = !accessory;
       accessory ??= new this.api.platformAccessory(name, uuid);
       accessory.displayName = name;
+      accessory.context.sensorKey = sensor.key;
       accessory.getService(Service.AccessoryInformation)!
         .setCharacteristic(Characteristic.Manufacturer, 'Deye')
-        .setCharacteristic(Characteristic.Model, 'SUN-6K-SG05LP1-EU-SM2-P')
-        .setCharacteristic(Characteristic.SerialNumber, `${this.identity}-${sensor.key}`);
+        .setCharacteristic(Characteristic.Model, 'Modbus TCP Inverter')
+        .setCharacteristic(Characteristic.SerialNumber, `${PLUGIN_NAME}-${sensor.key}`);
       const service = accessory.getService(Service.TemperatureSensor) ?? accessory.addService(Service.TemperatureSensor, name);
       service.setCharacteristic(Characteristic.Name, name);
       service.getCharacteristic(Characteristic.CurrentTemperature)
@@ -73,8 +89,13 @@ export class DeyePlatform implements DynamicPlatformPlugin {
         });
       service.updateCharacteristic(Characteristic.StatusFault, Characteristic.StatusFault.GENERAL_FAULT);
       this.services.set(sensor.key, service);
-      if (isNew) this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      else this.api.updatePlatformAccessories([accessory]);
+      if (isNew) {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.log.info(`Added accessory: ${name}`);
+      } else {
+        this.api.updatePlatformAccessories([accessory]);
+        this.log.info(`Restored accessory: ${name}`);
+      }
     }
   }
 
@@ -85,20 +106,24 @@ export class DeyePlatform implements DynamicPlatformPlugin {
         if (this.stopped) return;
         const service = this.services.get(sensor.key)!;
         try {
+          this.log.debug(`Reading ${sensor.name}: register ${sensor.register} at ${this.options.host}:${this.options.port}`);
           const [raw] = await readHoldingRegisters(this.options, sensor.register, 1);
           const value = decodeTemperature(raw);
           if (value === null) throw new Error(`Invalid temperature word: ${raw}`);
           if (this.stopped) return;
+          const firstOrRecovered = !this.values.has(sensor.key);
           this.values.set(sensor.key, value);
           service.updateCharacteristic(Characteristic.CurrentTemperature, value);
           service.updateCharacteristic(Characteristic.StatusFault, Characteristic.StatusFault.NO_FAULT);
-          this.log.debug(`${sensor.name}: ${value} °C (raw=${raw})`);
+          const reading = `${sensor.name}: ${value} °C (register=${sensor.register}, raw=${raw})`;
+          if (firstOrRecovered) this.log.info(reading);
+          else this.log.debug(reading);
         } catch (error) {
           if (this.stopped) return;
           this.values.delete(sensor.key);
           service.updateCharacteristic(Characteristic.StatusFault, Characteristic.StatusFault.GENERAL_FAULT);
           service.updateCharacteristic(Characteristic.CurrentTemperature, new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE));
-          this.log.warn(`${sensor.name}: ${error instanceof Error ? error.message : String(error)}`);
+          this.log.warn(`${sensor.name} read failed at ${this.options.host}:${this.options.port}, register ${sensor.register}: ${error instanceof Error ? error.message : String(error)}. Will retry next cycle.`);
         }
       }
     } finally {

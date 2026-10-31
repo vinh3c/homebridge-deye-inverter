@@ -56,13 +56,14 @@ The plugin preserves sensor identities when the logger's IP address changes. Eac
 npm ci
 npm run typecheck
 npm test
+npm run test:homebridge
 npm pack
 ```
 
-`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.0.tgz`. Install the local package on your Homebridge machine with:
+`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.1.tgz`. Install the local package on your Homebridge machine with:
 
 ```sh
-npm install -g ./homebridge-deye-inverter-1.0.0.tgz
+npm install -g ./homebridge-deye-inverter-1.0.1.tgz
 ```
 
 A CLI is also available to test the logger directly from the source checkout:
@@ -74,7 +75,18 @@ npm start
 
 The CLI supports a `.env` file based on `.env.example`. Homebridge uses the platform settings above, not `.env`.
 After `npm run build`, use `npm run serve -- --once` to run the compiled CLI.
-Tests use a simulated Modbus TCP logger and the Homebridge API/HAP; they do not access a real inverter.
+Unit tests use a simulated Modbus TCP logger and the Homebridge API/HAP. `npm run test:homebridge` also starts an isolated real Homebridge instance, loads the compiled plugin, and verifies all three sensors and temperatures through its HAP endpoint and persisted accessory cache. Tests do not access a real inverter.
+
+## Troubleshooting missing sensors
+
+Installing the package alone does not enable its platform. Save the configuration shown above in Homebridge, then restart Homebridge. The platform name must be `DeyeInverter`.
+
+Version 1.0.1 logs `Plugin loaded (Homebridge ..., Node ...)` as soon as Homebridge invokes the plugin entry point, even before platform configuration is loaded. If no platform starts in that process, it logs `DeyeInverter was not initialized` with configuration guidance and a reminder to check child bridge logs.
+
+Platform startup logs include `Starting DeyeInverter platform`, the logger address, `Added accessory:` or `Restored accessory:` for each sensor, and `Ready: DC Temperature, AC Temperature, Battery Temperature`. The first successful reading and recovery after a failed read are logged at the normal info level; subsequent readings use debug logging. Read failures include the logger address, register, and error.
+If the initialization line is missing, check that the platform configuration was saved and the plugin is enabled. If there is a load error, inspect the preceding Homebridge logs.
+
+If you enabled a child bridge, pair that child bridge with Apple Home separately using its QR code. Otherwise, the sensors are exposed through your existing main bridge. The sensors are registered before any Modbus reads, so a logger connection error should produce unresponsive sensors rather than prevent their creation.
 
 ## GitHub Actions and npm publishing
 

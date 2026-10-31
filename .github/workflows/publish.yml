@@ -28,6 +28,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:homebridge
       - name: Set repository metadata
         run: npm pkg set repository.type=git repository.url="git+https://github.com/${GITHUB_REPOSITORY}.git"
       - run: npm pack --dry-run
