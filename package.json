@@ -2,7 +2,7 @@
   "name": "homebridge-deye-inverter",
   "displayName": "Deye Inverter",
   "version": "1.0.3",
-  "description": "Homebridge DC, AC and battery temperature sensors for Deye inverters via Modbus TCP",
+  "description": "Homebridge temperature and grid power contact sensors for Deye inverters via Modbus TCP",
   "main": "dist/index.js",
   "keywords": [
     "homebridge-plugin",

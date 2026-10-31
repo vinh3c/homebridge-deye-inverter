@@ -2,13 +2,13 @@
   "pluginAlias": "DeyeInverter",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "## Quick setup\n1. Enable Modbus in your logger.\n2. Enter the logger IP address below.\n3. Click **Save**, then **Restart Homebridge**.\n\nSaving this form activates the plugin and creates three temperature sensors. No manual config.json editing is needed. Tested with Deye SUN-6K-SG05LP1-EU-SM2-P.",
+  "headerDisplay": "## Quick setup\n1. Enable Modbus in your logger.\n2. Enter the logger IP address below.\n3. Click **Save**, then **Restart Homebridge**.\n\nSaving this form activates the plugin and creates three temperature sensors plus an Grid contact sensor (Closed = Grid On, Open = Grid Off). No manual config.json editing is needed. Temperature readings tested with Deye SUN-6K-SG05LP1-EU-SM2-P; grid detection requires verification on the inverter.",
   "footerDisplay": "**Finish setup:** click **Save**, then **Restart Homebridge**. Installing the plugin alone does not activate its sensors.",
   "schema": {
     "type": "object",
     "required": ["host"],
     "properties": {
-      "host": { "title": "Logger IP address", "type": "string", "placeholder": "e.g. 192.168.5.60", "minLength": 1, "description": "Required. Enter your logger IP address, then click Save and restart Homebridge." },
+      "host": { "title": "Logger IP address", "type": "string", "placeholder": "e.g. 192.168.5.190", "minLength": 1, "description": "Required. Enter your logger IP address, then click Save and restart Homebridge." },
       "port": { "title": "Modbus TCP port", "type": "integer", "default": 502, "minimum": 1, "maximum": 65535 }
     }
   },

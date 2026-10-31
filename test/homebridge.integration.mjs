@@ -7,14 +7,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 
-test('real Homebridge loads the built plugin and exposes three sensors over HAP', { timeout: 30000 }, async () => {
+test('real Homebridge loads the built plugin and exposes four sensors over HAP', { timeout: 30000 }, async () => {
   const storage = await mkdtemp(join(tmpdir(), 'deye-homebridge-'));
   const logger = createServer(socket => {
     let data = Buffer.alloc(0);
     socket.on('data', chunk => {
       data = Buffer.concat([data, chunk]);
       if (data.length < 12) return;
-      const raw = { 90: 1624, 91: 1559, 182: 1340 }[data.readUInt16BE(8)];
+      const raw = { 90: 1624, 91: 1559, 182: 1340, 150: 2300 }[data.readUInt16BE(8)];
       const reply = Buffer.from([0, 0, 0, 0, 0, 5, 1, 3, 2, 0, 0]);
       data.copy(reply, 0, 0, 2);
       reply.writeUInt16BE(raw, 9);
@@ -38,14 +38,16 @@ test('real Homebridge loads the built plugin and exposes three sensors over HAP'
   child.stderr.on('data', chunk => { output += chunk; });
   try {
     let sensors = [];
+    let contact;
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
       try {
         const response = await fetch(`http://127.0.0.1:${hapPort}/accessories`, { signal: AbortSignal.timeout(1000) });
         const body = await response.json();
         sensors = body.accessories.flatMap(a => a.services).filter(s => s.type === '8A');
+        contact = body.accessories.flatMap(a => a.services).find(s => s.type === '80');
         const temperatures = sensors.map(s => s.characteristics.find(c => c.type === '11')?.value);
-        if (sensors.length === 3 && temperatures.every(v => typeof v === 'number' && v > 0)) break;
+        if (sensors.length === 3 && temperatures.every(v => typeof v === 'number' && v > 0) && contact?.characteristics.find(c => c.type === '77')?.value === 0 && contact?.characteristics.find(c => c.type === '77')?.status === undefined && output.includes('Grid: power available')) break;
       } catch {}
       if (child.exitCode !== null) break;
       await delay(100);
@@ -55,13 +57,17 @@ test('real Homebridge loads the built plugin and exposes three sensors over HAP'
     assert.deepEqual(names.sort(), ['AC Temperature', 'Battery Temperature', 'DC Temperature']);
     const temperatures = sensors.map(s => Number(s.characteristics.find(c => c.type === '11').value.toFixed(1)));
     assert.deepEqual(temperatures.sort((a, b) => a - b), [34, 55.9, 62.4]);
+    assert(contact, output);
+    assert.equal(contact.characteristics.find(c => c.type === '23').value, 'Grid');
+    assert.equal(contact.characteristics.find(c => c.type === '6A').value, 0);
+    assert.equal(contact.characteristics.find(c => c.type === '77').value, 0);
     // Verify Homebridge's persisted accessory cache, not just plugin API calls.
     await delay(100);
     const cache = JSON.parse(await readFile(join(storage, 'accessories', 'cachedAccessories'), 'utf8'));
-    assert.equal(cache.length, 3);
+    assert.equal(cache.length, 4);
     assert.match(output, /Plugin loaded \(Homebridge /, 'entry point must log even before platform setup');
     assert.match(output, /Starting DeyeInverter platform/);
-    for (const name of ['DC Temperature', 'AC Temperature', 'Battery Temperature']) {
+    for (const name of ['DC Temperature', 'AC Temperature', 'Battery Temperature', 'Grid']) {
       assert(output.includes(`Added accessory: ${name}`), `Missing accessory registration log: ${name}`);
       assert(output.includes(`${name}: `), `Missing first temperature reading log: ${name}`);
     }

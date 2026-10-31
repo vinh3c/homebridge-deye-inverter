@@ -43,9 +43,10 @@ test('logs plugin loading and detects a missing platform configuration', t => {
   assert(!messages.includes('platforms and restart'), 'setup instructions should use the UI instead of manual JSON edits');
 });
 
-test('creates three HAP sensors, restores cache, faults and recovers, stops polling', async t => {
+test('creates four HAP sensors, restores cache, faults and recovers, stops polling', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let failBattery = false;
+  let gridRaw = 2300;
   const registers: number[] = [];
   const server = createServer(socket => {
     let received = Buffer.alloc(0);
@@ -54,7 +55,7 @@ test('creates three HAP sensors, restores cache, faults and recovers, stops poll
       if (received.length < 12) return;
       const address = received.readUInt16BE(8);
       registers.push(address);
-      const raw = address === 90 ? 1624 : address === 91 ? 1559 : failBattery ? 65535 : 1340;
+      const raw = address === 150 ? gridRaw : address === 90 ? 1624 : address === 91 ? 1559 : failBattery ? 65535 : 1340;
       const response = Buffer.from([0, 0, 0, 0, 0, 5, 1, 3, 2, 0, 0]);
       received.copy(response, 0, 0, 2);
       response.writeUInt16BE(raw, 9);
@@ -77,24 +78,50 @@ test('creates three HAP sensors, restores cache, faults and recovers, stops poll
   const sensor = (accessory: PlatformAccessory) => accessory.getService(Service.TemperatureSensor)!;
   try {
     api.signalFinished();
-    assert.equal(added.length, 2);
+    assert.equal(added.length, 3);
     assert.deepEqual(updated, [cached]);
     assert.equal(cached.getService(Service.AccessoryInformation)!.getCharacteristic(Characteristic.Model).value, 'Modbus TCP Inverter');
     const ac = added.find(a => a.displayName === 'AC Temperature')!;
     const battery = added.find(a => a.displayName === 'Battery Temperature')!;
+    const grid = added.find(a => a.displayName === 'Grid')!.getService(Service.ContactSensor)!;
+    await assert.rejects(grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest());
+    const waitForCycle = async () => {
+      const count = registers.length;
+      t.mock.timers.tick(10_000);
+      await until(() => registers.length >= count + 4);
+      // Allow the final response to complete and the next poll to be scheduled.
+      await delay(20);
+    };
     await until(() => sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).value === 34);
+    await until(() => grid.getCharacteristic(Characteristic.StatusFault).value === 0);
+    await delay(20);
+    assert.equal(await grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest(), 0);
     assert(Math.abs(Number(await sensor(cached).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest()) - 62.4) < 1e-8);
     assert(Math.abs(Number(await sensor(ac).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest()) - 55.9) < 1e-8);
-    assert.deepEqual(registers.slice(0, 3), [90, 91, 182]);
+    assert.deepEqual(registers.slice(0, 4), [90, 91, 182, 150]);
     failBattery = true;
-    t.mock.timers.tick(10_000);
+    await waitForCycle();
     await until(() => sensor(battery).getCharacteristic(Characteristic.StatusFault).value === 1);
     await assert.rejects(sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest());
     assert.equal(sensor(ac).getCharacteristic(Characteristic.StatusFault).value, 0);
     failBattery = false;
-    t.mock.timers.tick(10_000);
+    await waitForCycle();
     await until(() => sensor(battery).getCharacteristic(Characteristic.StatusFault).value === 0);
     assert.equal(await sensor(battery).getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest(), 34);
+    for (const [raw, expected] of [[900, 0], [800, 0], [799, 1], [0, 1], [900, 1], [999, 1], [1000, 0]]) {
+      gridRaw = raw;
+      await waitForCycle();
+      assert.equal(await grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest(), expected, `grid raw=${raw}`);
+    }
+    gridRaw = 65535;
+    await waitForCycle();
+    assert.equal(grid.getCharacteristic(Characteristic.StatusFault).value, 1);
+    await assert.rejects(grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest());
+    assert.equal(sensor(ac).getCharacteristic(Characteristic.StatusFault).value, 0);
+    gridRaw = 2300;
+    await waitForCycle();
+    assert.equal(grid.getCharacteristic(Characteristic.StatusFault).value, 0);
+    assert.equal(await grid.getCharacteristic(Characteristic.ContactSensorState).handleGetRequest(), 0);
     api.signalShutdown();
     const requests = registers.length;
     t.mock.timers.tick(60_000);
