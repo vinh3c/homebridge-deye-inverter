@@ -1,29 +1,29 @@
 # homebridge-deye-inverter
 
-Plugin Homebridge cung cấp **3 cảm biến nhiệt độ riêng** trong HomeKit: **DC Temperature**, **AC Temperature** và **Battery Temperature**.
-Dành cho inverter **SUN-6K-SG05LP1-EU-SM2-P** qua Modbus TCP.
+A Homebridge plugin that exposes three separate HomeKit temperature sensors: **DC Temperature**, **AC Temperature**, and **Battery Temperature**.
+Designed for the **Deye SUN-6K-SG05LP1-EU-SM2-P** inverter over Modbus TCP.
 
-Vào trang cấu hình của logger, **enable Modbus**, rồi nhập IP của logger vào cấu hình plugin. Cổng mặc định là `502`.
+Open your logger settings, **enable Modbus**, and enter the logger's IP address in the plugin settings. The default port is `502`.
 
-Plugin đọc Holding Registers (FC03): DC `90`, AC/tản nhiệt `91`, pin `182`, quy đổi `(raw - 1000) / 10` °C.
-Chỉ đọc, không ghi thay đổi lên inverter.
+The plugin reads holding registers (FC03): DC `90`, AC/heatsink `91`, and battery `182`, using `(raw - 1000) / 10` to convert values to °C. It only reads data and does not change inverter settings.
 
-## Model đã kiểm tra
+## Tested model
 
-Đã kiểm tra đọc thành công cả 3 nhiệt độ **DC, AC và pin** trên inverter **Deye SUN-6K-SG05LP1-EU-SM2-P**, thông qua logger đã bật Modbus, cổng `502`.
-Một lần đọc thực tế cho kết quả: DC **62,4°C**, AC **55,9°C**, pin **34,0°C**. Đây là số đo tại thời điểm kiểm tra, không phải giá trị cố định.
-Phần tích hợp Homebridge đã được kiểm thử bằng API/HAP Homebridge và logger giả lập; chưa kiểm tra ghép đôi với Apple Home trên hệ thống thực tế.
+All three temperatures have been successfully read from a **Deye SUN-6K-SG05LP1-EU-SM2-P** through a logger with Modbus enabled on port `502`.
+One live reading returned **62.4°C DC**, **55.9°C AC**, and **34.0°C battery**. These are readings from that test, not fixed values.
 
-## Cài đặt Homebridge
+The Homebridge integration has been tested with the Homebridge API/HAP and a simulated logger. Pairing with Apple Home has not yet been tested on a live installation.
 
-Yêu cầu Node.js 22.10+ hoặc 24 và Homebridge 1.8+ / 2.x.
-Sau khi package có trên npm, tìm **homebridge-deye-inverter** trong Homebridge UI và cài đặt, hoặc:
+## Installation
+
+Requires Node.js 22.10+ within the 22.x series, or Node.js 24.x, and Homebridge 1.8+ or 2.x.
+Once published to npm, search for **homebridge-deye-inverter** in the Homebridge UI and install it, or run:
 
 ```sh
 npm install -g homebridge-deye-inverter
 ```
 
-Thêm platform bằng trang Settings của plugin hoặc thêm vào mảng `platforms` trong `config.json`:
+Configure the plugin through its Settings page, or add this entry to the `platforms` array in your Homebridge `config.json`:
 
 ```json
 {
@@ -32,23 +32,25 @@ Thêm platform bằng trang Settings của plugin hoặc thêm vào mảng `plat
 }
 ```
 
-Khởi động lại Homebridge. Ba cảm biến sẽ xuất hiện qua bridge đã ghép đôi với Apple Home.
-Máy chạy Homebridge cần truy cập được IP/cổng của logger.
+Restart Homebridge. The three sensors will be available through the bridge paired with Apple Home.
+The machine running Homebridge must be able to reach the logger's IP address and port.
 
-Chỉ cần nhập IP logger. Các tùy chọn dưới đây không bắt buộc và nằm trong **Advanced settings** của Homebridge UI.
+Only the logger's IP address is needed. The port is optional and can be changed under **Advanced settings** in the Homebridge UI.
 
-| Cấu hình | Mặc định | Ý nghĩa |
+| Setting | Default | Description |
 | --- | --- | --- |
-| `host` | `192.168.5.60` | IP hoặc hostname logger |
-| `port` | `502` | Cổng Modbus TCP |
+| `host` | `192.168.5.60` | Logger IP address or hostname |
+| `port` | `502` | Modbus TCP port |
 
-Plugin tự đọc mỗi 10 giây sau khi hoàn tất chu kỳ trước, chờ tối đa 5 giây cho mỗi yêu cầu và không chồng yêu cầu lên logger. Không cần cấu hình chu kỳ hay timeout. Cảm biến lỗi sẽ báo lỗi giao tiếp thay vì tiếp tục trả nhiệt độ cũ, rồi tự phục hồi khi đọc thành công.
-AC là cảm biến tản nhiệt inverter; pin là nhiệt độ inverter báo, không phải từng cell BMS.
-Plugin tự dùng địa chỉ giao tiếp inverter mặc định `1`, đã kiểm tra thành công trên model ở trên; bạn không cần tìm hay cấu hình địa chỉ này.
-Tên cảm biến được đặt sẵn là **DC Temperature**, **AC Temperature** và **Battery Temperature**; bạn có thể đổi tên trong Apple Home.
-Plugin tự giữ định danh cho 3 cảm biến; đổi IP không tạo cảm biến mới. Mỗi cấu hình platform hỗ trợ một inverter.
+The plugin waits 10 seconds after each polling cycle completes before starting the next cycle. Each request has a 5-second timeout, and requests never overlap. No polling or timeout configuration is needed. Failed sensors report a communication error instead of serving stale temperatures, and recover automatically after a successful read.
 
-## Chạy thử từ mã nguồn
+AC refers to the inverter's heatsink sensor. Battery temperature is the value reported by the inverter, not individual BMS cell temperatures.
+The plugin uses the inverter's default communication address of `1`, which worked with the tested model. You do not need to find or configure this address.
+
+Sensor names are **DC Temperature**, **AC Temperature**, and **Battery Temperature**. You can rename them in Apple Home.
+The plugin preserves sensor identities when the logger's IP address changes. Each platform configuration supports one inverter.
+
+## Development and local installation
 
 ```sh
 npm ci
@@ -57,36 +59,36 @@ npm test
 npm pack
 ```
 
-`npm pack` tự build và tạo `homebridge-deye-inverter-1.0.0.tgz`. Cài bản local trên máy Homebridge:
+`npm pack` builds the plugin and creates `homebridge-deye-inverter-1.0.0.tgz`. Install the local package on your Homebridge machine with:
 
 ```sh
 npm install -g ./homebridge-deye-inverter-1.0.0.tgz
 ```
 
-Vẫn có CLI để kiểm tra logger trực tiếp từ mã nguồn:
+A CLI is also available to test the logger directly from the source checkout:
 
 ```sh
 npm start -- --once
 npm start
 ```
 
-CLI hỗ trợ `.env` theo `.env.example`. Homebridge dùng cấu hình platform bên trên, không dùng `.env`.
-`npm run serve -- --once` chạy CLI đã biên dịch sau `npm run build`.
-Các kiểm thử dùng Modbus TCP giả lập và API/HAP Homebridge, không truy cập inverter thật.
+The CLI supports a `.env` file based on `.env.example`. Homebridge uses the platform settings above, not `.env`.
+After `npm run build`, use `npm run serve -- --once` to run the compiled CLI.
+Tests use a simulated Modbus TCP logger and the Homebridge API/HAP; they do not access a real inverter.
 
-## GitHub Actions và npm
+## GitHub Actions and npm publishing
 
-- `ci.yml`: mỗi push/PR, kiểm tra TypeScript, tests và đóng gói trên Node 22/24.
-- `publish.yml`: khi **publish GitHub Release chính thức**, kiểm tra tag bằng `v` + version trong `package.json`, chạy kiểm tra rồi publish npm. Prerelease được bỏ qua.
-- Workflow tự gắn `repository.url` theo repository đang chạy. Không commit token vào mã nguồn.
+- `ci.yml`: runs TypeScript checks, tests, and package validation on Node.js 22 and 24 for every push and pull request.
+- `publish.yml`: runs checks and publishes to npm when a **non-prerelease GitHub Release is published**. The release tag must match `v` followed by the version in `package.json`.
+- The publishing workflow sets `repository.url` from the GitHub repository it runs in. Do not commit tokens to source control.
 
-Thiết lập lần đầu:
+Initial setup:
 
-1. Đưa mã nguồn lên repository GitHub của bạn. Kiểm tra tên `homebridge-deye-inverter` còn khả dụng trên npm; nếu đổi tên, đổi cả `PLUGIN_NAME` trong `src/platform.ts`.
-2. Để publish lần đầu từ Actions, tạo npm granular access token có quyền publish package và bypass 2FA, rồi lưu vào GitHub repository secret **`NPM_TOKEN`**.
-3. Commit version cùng `package-lock.json`, tạo tag `v1.0.0` trỏ đến commit đó và publish GitHub Release cho tag. Workflow sẽ publish version `1.0.0`.
-4. Khi package đã tồn tại, có thể chuyển sang **npm Trusted Publishing**: trong Settings của package trên npm, cấu hình đúng GitHub owner, repository và workflow **`publish.yml`**. Nếu giao diện yêu cầu allowed action, chọn publish. Không đặt environment vì workflow không dùng environment. Xóa secret `NPM_TOKEN` sau khi cấu hình OIDC; workflow đã có `id-token: write` và Node 24.
+1. Push the source to your GitHub repository. Check that the package name `homebridge-deye-inverter` is available on npm. If you rename the package, also update `PLUGIN_NAME` in `src/platform.ts`.
+2. For the first publication through Actions, create an npm granular access token with package publishing permissions and 2FA bypass enabled. Save it as the GitHub repository Actions secret **`NPM_TOKEN`**.
+3. Commit the package version and `package-lock.json`, create a `v1.0.0` tag pointing to that commit, and publish a GitHub Release for the tag. The workflow will publish version `1.0.0`.
+4. Once the package exists, you can switch to **npm Trusted Publishing**. In the npm package settings, configure the exact GitHub owner, repository, and workflow filename **`publish.yml`**. If prompted for an allowed action, select publishing. Leave the environment unset because this workflow does not use one. Remove the `NPM_TOKEN` secret after configuring OIDC; the workflow already has `id-token: write` permission and uses Node.js 24.
 
-Với các lần sau, tăng version bằng `npm version patch` trong Git repository sạch, push commit/tag rồi publish GitHub Release cho tag mới. Không thể publish lại cùng một version npm.
+For later releases, run `npm version patch` in a clean Git working tree, push the commit and tag, then publish a GitHub Release for the new tag. An existing npm version cannot be published again.
 
-Tham khảo: [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/), [Homebridge dynamic platform API](https://developers.homebridge.io/homebridge/interfaces/DynamicPlatformPlugin.html).
+References: [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/), [Homebridge dynamic platform API](https://developers.homebridge.io/homebridge/interfaces/DynamicPlatformPlugin.html).
