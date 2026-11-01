@@ -29,6 +29,31 @@ export function readElectrical(snapshot: RegisterSnapshot, sensor: typeof electr
   };
 }
 
+/** Identify each utility endpoint as its own device behind the bridge. */
+function createElectricalSensorType(matter: MatterAPI, mode: number): MatterAccessory['deviceType'] {
+  const electrical = matter.deviceTypes.ElectricalSensor;
+  const bridged = matter.deviceTypes.BridgedNode;
+  const Base = bridged.behaviors.bridgedDeviceBasicInformation;
+  class BridgedElectricalInformation extends Base {
+    override async initialize(): Promise<void> {
+      await super.initialize();
+      const descriptor = await this.agent.load(this.endpoint.behaviors.supported.descriptor);
+      // A basic-information cluster alone does not advertise the Bridged Node
+      // device type. Do this before readiness, including after cache restoration.
+      const state = descriptor.state as { deviceTypeList: { deviceType: number; revision: number }[] };
+      state.deviceTypeList = [
+        { deviceType: bridged.deviceType, revision: bridged.deviceRevision },
+        { deviceType: electrical.deviceType, revision: electrical.deviceRevision },
+      ];
+    }
+  }
+  return electrical.with(
+    BridgedElectricalInformation,
+    electrical.requirements.PowerTopologyServer.with('TreeTopology'),
+    electrical.requirements.ElectricalPowerMeasurementServer.with(mode === 1 ? 'DirectCurrent' : 'AlternatingCurrent'),
+  );
+}
+
 export class PowerSensors {
   private readonly cached = new Map<string, MatterAccessory>();
   private readonly uuids = new Map<string, string>();
@@ -43,9 +68,12 @@ export class PowerSensors {
       if (stopped()) return;
       const uuid = matter.uuid.generate(`${plugin}:${sensor.key}`);
       const cached = this.cached.get(uuid) ?? [...this.cached.values()].find(item => item.context.sensorKey === sensor.key);
+      // Cache restoration reconstructs only the base type. Explicit measurement
+      // behaviors make Homebridge rebuild it through its awaited registration
+      // path, removing stale PowerSource clusters rather than attaching in place.
       const accessory: MatterAccessory = {
         UUID: cached?.UUID ?? uuid, displayName: sensor.name,
-        deviceType: matter.deviceTypes.ElectricalSensor,
+        deviceType: createElectricalSensorType(matter, sensor.mode),
         manufacturer: 'Deye', model: 'Modbus TCP Inverter', serialNumber: `deye-${sensor.key}`,
         context: { sensorKey: sensor.key },
         clusters: {
@@ -60,6 +88,9 @@ export class PowerSensors {
         await delay(50);
       }
       if (stopped()) return;
+      if (await matter.getAccessoryState(accessory.UUID, 'powerSource') !== undefined) {
+        throw new Error(`${sensor.name}: unexpected PowerSource remains on the electrical endpoint`);
+      }
       this.uuids.set(sensor.key, accessory.UUID);
       await matter.updateAccessoryState(accessory.UUID, 'electricalPowerMeasurement', { activePower: null, voltage: null, activeCurrent: null });
       await matter.updateAccessoryState(accessory.UUID, 'bridgedDeviceBasicInformation', { reachable: false });

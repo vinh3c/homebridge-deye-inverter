@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-test('all nine accessories use real Matter endpoints and keep battery scope through legacy-cache migration and restart', { timeout: 60000 }, async () => {
+test('all nine accessories use real Matter endpoints and keep battery scope through legacy-cache migration and restart', { timeout: 90000 }, async () => {
   const storage = await mkdtemp(join(tmpdir(), 'deye-matter-'));
   let batterySoc = 83;
   const logger = createServer(socket => {
@@ -39,11 +39,14 @@ test('all nine accessories use real Matter endpoints and keep battery scope thro
   }));
   let child;
   let originalBatteryIdentity;
+  let originalPowerIdentities;
+  let originalIdentities;
   try {
     for (const [index, run] of ['Added', 'Restored', 'Restored'].entries()) {
       batterySoc = [83, 27, 54][index];
+      const initialSoc = batterySoc;
       let output = '';
-      child = spawn(process.execPath, ['--import', pathToFileURL(resolve('test/matter-network.mjs')).href, resolve('node_modules/homebridge/bin/homebridge.js'), '-D', '-U', storage, '-P', resolve('.'), '--strict-plugin-resolution'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(process.execPath, ['--import', pathToFileURL(resolve('test/matter-network.mjs')).href, resolve('node_modules/homebridge/bin/homebridge.js'), '-D', '-U', storage, '-P', resolve('.'), '--strict-plugin-resolution'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { output += chunk; });
       const deadline = Date.now() + 15000;
       while (!output.includes('Battery Power: -500 W') && Date.now() < deadline && child.exitCode === null) await delay(50);
@@ -52,8 +55,57 @@ test('all nine accessories use real Matter endpoints and keep battery scope thro
       assert(!output.includes('Failed to register Matter accessory'), output);
       assert(!output.includes('Matter sensor setup failed'), output);
       assert(!output.includes('Removing orphaned Matter accessory'), output);
+      if (index === 1) {
+        batterySoc = 28;
+        const updateDeadline = Date.now() + 12000;
+        while (!output.includes('Battery Percent: 28%') && Date.now() < updateDeadline) await delay(50);
+        assert(output.includes('Battery Percent: 28%'), 'SOC must update again after migration, not remain at its first reading');
+      }
       // Wait for Homebridge's debounced cache write, then verify its actual state.
       await delay(2200);
+      const live = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('No live endpoint snapshot')), 3000);
+        const receive = message => {
+          if (message.type !== 'deye-endpoint-snapshot') return;
+          clearTimeout(timeout);
+          child.off('message', receive);
+          resolve(message.endpoints);
+        };
+        child.on('message', receive);
+        child.send('deye-endpoint-snapshot');
+      });
+      assert.equal(live.length, 9);
+      for (const field of ['key', 'uuid', 'serial', 'number']) {
+        const values = live.map(endpoint => endpoint[field]);
+        assert(values.every(value => value !== undefined && value !== ''), `every accessory must have ${field}`);
+        assert.equal(new Set(values).size, 9, `all nine accessories must have distinct ${field} values`);
+      }
+      const identities = live.map(({ key, uuid, serial, number }) => ({ key, uuid, serial, number }))
+        .sort((left, right) => left.key.localeCompare(right.key));
+      if (originalIdentities) assert.deepEqual(identities, originalIdentities, 'all UUIDs, serials and endpoint numbers must survive migration and restart');
+      else originalIdentities = identities;
+      const powerIdentities = live.filter(endpoint => ['pv1', 'pv2', 'gridPower', 'loadPower', 'batteryPower'].includes(endpoint.key))
+        .map(endpoint => ({ key: endpoint.key, number: endpoint.number }));
+      if (originalPowerIdentities) assert.deepEqual(powerIdentities, originalPowerIdentities, 'rebuilding power endpoints must preserve endpoint numbers');
+      else originalPowerIdentities = powerIdentities;
+      for (const endpoint of live) {
+        assert.equal(endpoint.manufacturer, 'Deye', `${endpoint.key} must publish its own manufacturer`);
+        assert.equal(endpoint.model, 'Modbus TCP Inverter', `${endpoint.key} must publish its own model`);
+        const serialPrefix = ['dc', 'ac', 'battery', 'grid'].includes(endpoint.key) ? 'homebridge-deye-inverter' : 'deye';
+        assert.equal(endpoint.serial, `${serialPrefix}-${endpoint.key}`, `${endpoint.key} must retain its individual serial`);
+        if (powerIdentities.some(power => power.key === endpoint.key)) {
+          assert(endpoint.types.some(type => type.deviceType === 0x13), `${endpoint.key} must advertise its own Bridged Node identity`);
+          assert(endpoint.types.some(type => type.deviceType === 0x510), `${endpoint.key} must advertise ElectricalSensor functionality`);
+          assert.equal(endpoint.label, { pv1: 'PV1 Power', pv2: 'PV2 Power', gridPower: 'Grid Power', loadPower: 'Load Power', batteryPower: 'Battery Power' }[endpoint.key]);
+        }
+        if (endpoint.key === 'battery') {
+          assert.deepEqual(endpoint.source, { scope: [endpoint.number], percent: batterySoc * 2 });
+        } else {
+          assert.equal(endpoint.source, null, `${endpoint.key} must not retain a live battery source`);
+          assert(!endpoint.servers.includes(0x2f), `${endpoint.key} must not advertise PowerSource cluster`);
+          assert(!endpoint.types.some(type => type.deviceType === 0x11), `${endpoint.key} must not advertise PowerSource device type`);
+        }
+      }
       const cache = JSON.parse(await readFile(join(storage, 'matter', '0EDE01020306', 'accessories.json'), 'utf8'));
       assert.equal(cache.length, 9);
       for (const accessory of cache) {
@@ -65,7 +117,9 @@ test('all nine accessories use real Matter endpoints and keep battery scope thro
       assert.equal(byKey.dc.clusters.temperatureMeasurement.measuredValue, 5000);
       assert.equal(byKey.ac.clusters.temperatureMeasurement.measuredValue, 4000);
       assert.equal(byKey.battery.clusters.temperatureMeasurement.measuredValue, 3000);
-      assert.equal(byKey.battery.clusters.powerSource.batPercentRemaining, batterySoc * 2);
+      // Homebridge debounces registration saves; ordinary state updates do not
+      // schedule a disk save. The live snapshot above verifies the later SOC.
+      assert.equal(byKey.battery.clusters.powerSource.batPercentRemaining, initialSoc * 2);
       assert.equal(byKey.battery.clusters.powerSource.description, 'Deye storage battery');
       // The assigned number comes from the real endpoint Ready log, independently
       // of the plugin's scope initializer and persisted accessory declaration.
@@ -98,6 +152,7 @@ test('all nine accessories use real Matter endpoints and keep battery scope thro
       assert.equal(byKey.grid.clusters.bridgedDeviceBasicInformation.reachable, true);
       for (const key of ['dc', 'ac', 'battery']) assert.equal(byKey[key].clusters.bridgedDeviceBasicInformation.reachable, true);
       assert(output.includes('Ready (Matter): DC Temperature, AC Temperature, Battery Temperature, Grid, PV1 Power, PV2 Power, Grid Power, Load Power, Battery Power'), output);
+      child.disconnect();
       child.kill('SIGTERM');
       await new Promise(resolve => child.once('exit', resolve));
       child = undefined;
@@ -110,11 +165,17 @@ test('all nine accessories use real Matter endpoints and keep battery scope thro
         }
         byKey.battery.clusters.powerSource.endpointList = [];
         byKey.battery.clusters.powerSource.batPercentRemaining = 198;
+        // Also exercise a stale source on an electrical endpoint. Merely omitting
+        // it from the new declaration must not hide a surviving live cluster.
+        for (const key of ['pv1', 'pv2', 'gridPower', 'loadPower', 'batteryPower']) {
+          byKey[key].clusters.powerSource = structuredClone(byKey.battery.clusters.powerSource);
+        }
         await writeFile(join(storage, 'matter', '0EDE01020306', 'accessories.json'), JSON.stringify(cache));
       }
     }
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
+      if (child.connected) child.disconnect();
       child.kill('SIGTERM');
       await new Promise(resolve => child.once('exit', resolve));
     }

@@ -34,9 +34,13 @@ Requires Homebridge >=2.2 and <3, Node.js ^22.10 or ^24, and Matter enabled on t
 
 Configuration: platform DeyeInverter, required host, optional port (default 502). The plugin uses unit ID 1 and a five-second request timeout. It does not change pairing or bridge settings.
 
+Each accessory has its own stable UUID and serial. UUID seeds use the plugin identifier and a fixed sensor key; cached UUIDs take precedence during upgrades. Serial numbers remain `homebridge-deye-inverter-dc`, `homebridge-deye-inverter-ac`, `homebridge-deye-inverter-battery`, `homebridge-deye-inverter-grid`, and `deye-` followed by `pv1`, `pv2`, `gridPower`, `loadPower` or `batteryPower`. Renaming an accessory or changing the logger IP does not generate a new identity. Manufacturer and model remain shared product metadata. Integration checks all nine UUIDs, serials and endpoint numbers for uniqueness within the bridge and stability across migration/restart.
+
 This version retains **Grid contact** alongside **Grid Power**, and removes **Total Consumption Energy**, **Total Import Energy** and combined **PV**. After all five replacement electrical endpoints are ready, their old cached accessories are unregistered. Grid contact and PV1/PV2 reuse existing identities when available. Temperature identities remain unchanged. Names, room assignments and automations for removed accessories may need updating. Cached HAP sensors are removed only after the Matter replacements are ready. All current Matter accessories re-register ownership on every startup.
 
 Each electrical branch publishes W, A and V on one ElectricalSensor, internally in mW/mA/mV. The user confirmed Apple Home displays power on 2026-11-01; current and voltage do not appear in their UI. These attributes remain published through Matter. Homebridge UI 5.29.0 uses an unknown-device tile for ElectricalSensor and may show no values. Successful endpoint tests do not establish Apple Home presentation. Cumulative energy is no longer published or polled.
+
+The user also confirmed that Apple Home groups all five Power readings inside one Homebridge accessory. Power endpoints now explicitly advertise both Bridged Node and ElectricalSensor in their descriptors, with their individual names, before readiness. Previously only the basic-information cluster was added, without the Bridged Node device type. Tests verify these identities across restarts; separate Apple Home accessory presentation remains unverified.
 
 ## Polling and failure handling
 
@@ -47,6 +51,8 @@ A failed register group clears affected electrical attributes to null while pres
 Temperature uses hundredths of a degree inside Matter; invalid readings become null/unreachable. Grid voltage is available on Grid Power. Zero watts alone does not imply an outage: the grid can be energized without import/export. Voltage indicates voltage presence, not relay state or grid quality. Grid contact uses the same voltage read: true/closed means voltage present (turns on at 100 V, stays on down to 80 V); false/open means voltage absent. Read failures mark it unreachable and preserve the last boolean state. CLI output remains measurements only.
 
 Storage battery SOC remains a detail on Battery Temperature through PowerSource, using half-percent units internally. Its endpointList contains only that accessory's actual assigned endpoint. Initialization clears cached SOC and scopes the source before readiness; the battery type is rebuilt with its existing UUID on each startup because Homebridge does not serialize custom initializers. SOC errors do not discard a valid temperature. No electrical branch carries this battery source. This is not a declared native BatteryStorage device or a verified battery UI/chart.
+
+Electrical sensors explicitly compose their measurement behaviors so Homebridge rebuilds cached endpoints during registration. This removes any legacy PowerSource cluster that could otherwise survive with a frozen battery level even though the new accessory declaration omits it. Startup checks the live endpoint for an unexpected source. Existing UUIDs and endpoint numbers are retained; removal of previously displayed battery details in Apple Home needs separate UI verification.
 
 ## CLI checks
 
@@ -75,6 +81,8 @@ npm pack
 ~~~
 
 Unit tests use a simulated logger for decoding, batching, fault recovery, cache migration, SOC scope and shutdown. The Matter integration uses real Homebridge endpoints with a simulated network and loopback logger. It covers fresh startup, legacy battery/contact/PV/energy cache migration, and scoped-cache restart, checks ownership and endpoint identity, and verifies W/A/V units and AC/DC mode. No Matter UDP sockets, LAN advertisements, physical inverter access or Apple Home pairing are used by these tests.
+
+The integration also injects stale PowerSource clusters into all five electrical accessory caches and checks live endpoint server lists and device types after migration/restart. It verifies that only Battery Temperature has a battery source and receives a later SOC change.
 
 ## GitHub Actions and npm publishing
 
